@@ -165,7 +165,7 @@ export function ChatInput({
   }, []);
 
   const handleImageFiles = useCallback(
-    async (files: FileList | null) => {
+    async (files: FileList | File[] | null) => {
       if (!files || files.length === 0) return;
       if (!visionEnabled) {
         setImageErrors([{ name: "", message: t("chat.visionDisabled") }]);
@@ -209,6 +209,25 @@ export function ChatInput({
       if (imageInputRef.current) imageInputRef.current.value = "";
     },
     [images, t, visionEnabled],
+  );
+
+  const handlePaste = useCallback(
+    (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const itemImages = Array.from(event.clipboardData.items)
+        .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => file !== null);
+      const pastedImages =
+        itemImages.length > 0
+          ? itemImages
+          : Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+
+      if (pastedImages.length === 0) return;
+
+      event.preventDefault();
+      void handleImageFiles(pastedImages);
+    },
+    [handleImageFiles],
   );
 
   return (
@@ -261,6 +280,7 @@ export function ChatInput({
             handleInput();
           }}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder={quotes.length > 0 ? t("chat.askAboutQuote") : resolvedPlaceholder}
           disabled={disabled}
           rows={1}
