@@ -6,6 +6,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import type {
   AbortedPart,
   CitationPart,
+  ImagePart,
   MindmapPart,
   Part,
   ReasoningPart,
@@ -86,6 +87,8 @@ export function PartRenderer({ part, citations, onCitationClick }: PartProps) {
       return <ToolCallPartView part={part} />;
     case "citation":
       return null;
+    case "image":
+      return <ImagePartView part={part} />;
     case "mindmap":
       return <MindmapPartView part={part} />;
     case "aborted":
@@ -93,6 +96,25 @@ export function PartRenderer({ part, citations, onCitationClick }: PartProps) {
     default:
       return null;
   }
+}
+
+function ImagePartView({ part }: { part: ImagePart }) {
+  return (
+    <figure className="my-1 max-w-[320px] overflow-hidden rounded-xl border bg-muted/30">
+      <img
+        src={part.image.dataUrl}
+        alt={part.image.name}
+        className="max-h-72 w-full object-contain"
+        loading="lazy"
+      />
+      <figcaption
+        className="truncate px-2 py-1 text-xs text-muted-foreground"
+        title={part.image.name}
+      >
+        {part.image.name}
+      </figcaption>
+    </figure>
+  );
 }
 
 function TextPartView({
@@ -276,11 +298,7 @@ function ToolCallPartView({ part }: { part: ToolCallPart }) {
             <div
               className={cn(
                 "flex h-auto w-full cursor-pointer items-center justify-between gap-2 px-3 py-2 hover:bg-muted/50",
-                hasNotice
-                  ? "hover:bg-amber-500/10"
-                  : hasError
-                    ? "hover:bg-destructive/10"
-                    : "",
+                hasNotice ? "hover:bg-amber-500/10" : hasError ? "hover:bg-destructive/10" : "",
               )}
             >
               <div className="flex flex-1 items-center gap-2 overflow-hidden">

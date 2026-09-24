@@ -96,6 +96,9 @@ CREATE TABLE IF NOT EXISTS messages (
   content TEXT NOT NULL,
   citations TEXT, -- JSON array
   tool_calls TEXT, -- JSON array
+  reasoning TEXT, -- JSON array
+  parts TEXT, -- JSON array (including compressed image parts)
+  parts_order TEXT, -- JSON array
   created_at INTEGER NOT NULL
 );
 

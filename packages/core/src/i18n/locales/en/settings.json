@@ -113,6 +113,8 @@
     "ai_exactRequestUrlLabel": "Exact request URL",
     "ai_exactRequestUrlDesc": "Use the URL exactly as entered, without automatically appending /v1, /chat/completions, or /models.",
     "ai_exactRequestUrlFetchHint": "Exact request URL mode cannot infer the model list automatically. Add a model manually before testing.",
+    "ai_visionEnabled": "Supports image input",
+    "ai_visionEnabledDesc": "Enable only when the selected model supports vision input.",
     "ai_testModel": "Test Model",
     "ai_testModelAuto": "Auto-select first available model",
     "ai_fetchingModels": "Fetching...",

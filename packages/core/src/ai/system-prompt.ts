@@ -12,6 +12,7 @@ import { getBookProgressPercent } from "../utils/book-progress";
 
 type ReadingQuestionCategory =
   | "general_chat"
+  | "web_search"
   | "library_request"
   | "current_selection"
   | "current_page_context"

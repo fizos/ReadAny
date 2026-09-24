@@ -4,7 +4,8 @@ import i18n from "i18next";
  * Uses LangGraph reading agent for unified model support with tool calling.
  * Supports OpenAI-compatible, Anthropic Claude, and Google Gemini providers.
  */
-import type { AIConfig, Book, SemanticContext, Skill, Thread } from "../types";
+import type { AIConfig, AttachedImage, Book, SemanticContext, Skill, Thread } from "../types";
+import type { Part } from "../types/message";
 import { streamReadingAgent } from "./agents/reading-agent";
 import { processMessages } from "./message-pipeline";
 import { getToolResultError } from "./tool-result";
@@ -20,6 +21,7 @@ export interface StreamingOptions {
   aiConfig: AIConfig;
   deepThinking?: boolean;
   spoilerFree?: boolean;
+  images?: AttachedImage[];
   /** Injected tool provider */
   getAvailableTools: (options: {
     bookId: string | null;
@@ -85,10 +87,16 @@ export class StreamingChat {
     );
 
     const userInput = messages[messages.length - 1]?.content || "";
-    const history = messages.slice(0, -1).map((m) => ({
+    const history: Array<{
+      role: "user" | "assistant";
+      content: string;
+      reasoning?: string;
+      parts?: Part[];
+    }> = messages.slice(0, -1).map((m) => ({
       role: m.role as "user" | "assistant",
       content: m.content,
       reasoning: m.reasoning,
+      parts: m.parts,
     }));
 
     try {
@@ -113,6 +121,7 @@ export class StreamingChat {
           memorySummary: options.thread.memorySummary,
           getAvailableTools: options.getAvailableTools,
           signal,
+          images: options.images,
         },
         userInput,
         history,

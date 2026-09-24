@@ -60,7 +60,15 @@
     "selectAndCopy": "长按选中文字复制",
     "selectBooks": "选择书籍上下文",
     "threads": "对话列表",
-    "untitled": "新对话"
+    "untitled": "新对话",
+    "attachImage": "添加图片",
+    "visionDisabled": "请先在 AI 设置中为当前端点开启图片输入。",
+    "imageRawTooLarge": "图片“{{name}}”超过 10 MB。",
+    "imageCompressionFailed": "无法处理图片“{{name}}”。",
+    "imageLimit": "最多可添加 2 张图片。",
+    "imageTooLarge": "图片“{{name}}”压缩后超过 700 KB。",
+    "imageTotalTooLarge": "图片总大小超过 1.5 MB。",
+    "removeImage": "移除图片"
   },
   "streaming": {
     "thinking": "正在思考...",

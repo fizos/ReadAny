@@ -14,6 +14,7 @@ export {
   type ToolCallPart,
   type CitationPart,
   type QuotePart,
+  type ImagePart,
   type MindmapPart,
   type Part,
   type PartStatus,
@@ -27,12 +28,14 @@ export {
   createToolCallPart,
   createCitationPart,
   createQuotePart,
+  createImagePart,
   createMindmapPart,
   isTextPart,
   isReasoningPart,
   isToolCallPart,
   isCitationPart,
   isQuotePart,
+  isImagePart,
   isMindmapPart,
 } from "./message";
 export * from "./rag";

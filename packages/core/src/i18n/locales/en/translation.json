@@ -33,6 +33,8 @@
     "translation": "Translation",
     "providerMicrosoft": "Microsoft Translate (Free)",
     "providerAI": "AI Translation",
-    "providerDeepL": "DeepL"
+    "providerDeepL": "DeepL",
+    "movePopover": "Move translation window",
+    "resizePopover": "Resize translation window"
   }
 }

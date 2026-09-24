@@ -3,6 +3,7 @@ mod readany_cli;
 mod storage;
 mod sync;
 mod vector;
+mod web_fetch;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -45,6 +46,7 @@ pub fn run() {
             vector::vector_reinit,
             vector::vector_shutdown,
             readany_cli::readany_cli_run,
+            web_fetch::safe_web_fetch,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();

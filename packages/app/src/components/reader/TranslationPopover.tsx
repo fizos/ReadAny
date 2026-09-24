@@ -10,8 +10,24 @@ import {
   type TranslationTargetLang,
   type TranslatorName,
 } from "@readany/core/types/translation";
-import { Check, ChevronDown, Copy, Languages, Loader2, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Check,
+  ChevronDown,
+  Copy,
+  GripHorizontal,
+  Languages,
+  Loader2,
+  Scaling,
+  X,
+} from "lucide-react";
+import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 
 interface TranslationPopoverProps {
@@ -23,8 +39,65 @@ interface TranslationPopoverProps {
 const POPOVER_WIDTH = 288; // w-72 = 18rem = 288px
 const POPOVER_MIN_HEIGHT = 100; // header + content min height
 const POPOVER_MAX_HEIGHT = 200; // max total height
+const POPOVER_MIN_WIDTH = 240;
+const POPOVER_RESIZE_MIN_HEIGHT = 120;
 const PADDING = 16;
 const GAP = 8;
+
+interface ResizeRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+interface ResizeSession extends ResizeRect {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  previousUserSelect: string;
+  previousCursor: string;
+}
+
+type MoveSession = ResizeSession;
+
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+const clampResizeRect = (rect: ResizeRect): ResizeRect => {
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const availableWidth = Math.max(0, viewportWidth - PADDING * 2);
+  const availableHeight = Math.max(0, viewportHeight - PADDING * 2);
+  const minWidth = Math.min(POPOVER_MIN_WIDTH, availableWidth);
+  const minHeight = Math.min(POPOVER_RESIZE_MIN_HEIGHT, availableHeight);
+  const left = clamp(rect.left, PADDING, Math.max(PADDING, viewportWidth - PADDING - minWidth));
+  const top = clamp(rect.top, PADDING, Math.max(PADDING, viewportHeight - PADDING - minHeight));
+  const maxWidth = Math.max(minWidth, viewportWidth - PADDING - left);
+  const maxHeight = Math.max(minHeight, viewportHeight - PADDING - top);
+
+  return {
+    left,
+    top,
+    width: clamp(rect.width, minWidth, maxWidth),
+    height: clamp(rect.height, minHeight, maxHeight),
+  };
+};
+
+const clampMoveRect = (rect: ResizeRect): ResizeRect => {
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const availableWidth = Math.max(0, viewportWidth - PADDING * 2);
+  const availableHeight = Math.max(0, viewportHeight - PADDING * 2);
+  const width = clamp(rect.width, Math.min(1, availableWidth), availableWidth);
+  const height = clamp(rect.height, Math.min(1, availableHeight), availableHeight);
+
+  return {
+    left: clamp(rect.left, PADDING, Math.max(PADDING, viewportWidth - PADDING - width)),
+    top: clamp(rect.top, PADDING, Math.max(PADDING, viewportHeight - PADDING - height)),
+    width,
+    height,
+  };
+};
 
 export function TranslationPopover({ text, position, onClose }: TranslationPopoverProps) {
   const { t } = useTranslation();
@@ -46,6 +119,11 @@ export function TranslationPopover({ text, position, onClose }: TranslationPopov
   const containerRef = useRef<HTMLDivElement>(null);
   const langRef = useRef<HTMLDivElement>(null);
   const providerRef = useRef<HTMLDivElement>(null);
+  const moveHandleRef = useRef<HTMLButtonElement>(null);
+  const resizeGripRef = useRef<HTMLButtonElement>(null);
+  const moveSessionRef = useRef<MoveSession | null>(null);
+  const resizeSessionRef = useRef<ResizeSession | null>(null);
+  const explicitRectRef = useRef<ResizeRect | null>(null);
 
   // Calculate safe position that stays within viewport
   const calculatePosition = useCallback(() => {
@@ -101,16 +179,65 @@ export function TranslationPopover({ text, position, onClose }: TranslationPopov
   }, [position]);
 
   const [pos, setPos] = useState(() => calculatePosition());
+  const [explicitRect, setExplicitRect] = useState<ResizeRect | null>(null);
+
+  const restoreResizeEnvironment = useCallback(() => {
+    const session = resizeSessionRef.current;
+    if (!session) return;
+
+    if (resizeGripRef.current?.hasPointerCapture(session.pointerId)) {
+      try {
+        resizeGripRef.current.releasePointerCapture(session.pointerId);
+      } catch {
+        // The pointer capture may already have been released by the browser.
+      }
+    }
+    document.body.style.userSelect = session.previousUserSelect;
+    document.body.style.cursor = session.previousCursor;
+    resizeSessionRef.current = null;
+  }, []);
+
+  const restoreMoveEnvironment = useCallback(() => {
+    const session = moveSessionRef.current;
+    if (!session) return;
+
+    if (moveHandleRef.current?.hasPointerCapture(session.pointerId)) {
+      try {
+        moveHandleRef.current.releasePointerCapture(session.pointerId);
+      } catch {
+        // The pointer capture may already have been released by the browser.
+      }
+    }
+    document.body.style.userSelect = session.previousUserSelect;
+    document.body.style.cursor = session.previousCursor;
+    moveSessionRef.current = null;
+  }, []);
+
+  useEffect(
+    () => () => {
+      restoreMoveEnvironment();
+      restoreResizeEnvironment();
+    },
+    [restoreMoveEnvironment, restoreResizeEnvironment],
+  );
 
   // Update position when content changes
   // biome-ignore lint/correctness/useExhaustiveDependencies: content height changes after loading/translation updates.
   useEffect(() => {
-    setPos(calculatePosition());
-  }, [calculatePosition, translation, loading]);
+    if (!explicitRect) setPos(calculatePosition());
+  }, [calculatePosition, explicitRect, translation, loading]);
 
   // Update position on resize
   useEffect(() => {
-    const handleResize = () => setPos(calculatePosition());
+    const handleResize = () => {
+      if (explicitRectRef.current) {
+        const nextRect = clampMoveRect(explicitRectRef.current);
+        explicitRectRef.current = nextRect;
+        setExplicitRect(nextRect);
+        return;
+      }
+      setPos(calculatePosition());
+    };
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, [calculatePosition]);
@@ -188,6 +315,166 @@ export function TranslationPopover({ text, position, onClose }: TranslationPopov
     }
   };
 
+  const materializeRect = useCallback((interaction: "move" | "resize"): ResizeRect | null => {
+    if (explicitRectRef.current) return explicitRectRef.current;
+    const bounds = containerRef.current?.getBoundingClientRect();
+    if (!bounds) return null;
+
+    const boundsRect = {
+      left: bounds.left,
+      top: bounds.top,
+      width: bounds.width,
+      height: bounds.height,
+    };
+    const rect = interaction === "move" ? clampMoveRect(boundsRect) : clampResizeRect(boundsRect);
+    explicitRectRef.current = rect;
+    setExplicitRect(rect);
+    return rect;
+  }, []);
+
+  const commitResizeRect = useCallback((rect: ResizeRect) => {
+    explicitRectRef.current = rect;
+    setExplicitRect(rect);
+  }, []);
+
+  const handleMovePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.focus();
+    restoreResizeEnvironment();
+    const rect = materializeRect("move");
+    if (!rect) return;
+
+    setLangOpen(false);
+    setProviderOpen(false);
+    moveSessionRef.current = {
+      ...rect,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      previousUserSelect: document.body.style.userSelect,
+      previousCursor: document.body.style.cursor,
+    };
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "move";
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      restoreMoveEnvironment();
+    }
+  };
+
+  const handleMovePointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const session = moveSessionRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    event.preventDefault();
+
+    commitResizeRect(
+      clampMoveRect({
+        left: session.left + event.clientX - session.startX,
+        top: session.top + event.clientY - session.startY,
+        width: session.width,
+        height: session.height,
+      }),
+    );
+  };
+
+  const handleMovePointerEnd = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (moveSessionRef.current?.pointerId !== event.pointerId) return;
+    restoreMoveEnvironment();
+  };
+
+  const handleMoveKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const step = event.shiftKey ? 32 : 10;
+    const delta = {
+      ArrowLeft: { x: -step, y: 0 },
+      ArrowRight: { x: step, y: 0 },
+      ArrowUp: { x: 0, y: -step },
+      ArrowDown: { x: 0, y: step },
+    }[event.key];
+    if (!delta) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = materializeRect("move");
+    if (!rect) return;
+    commitResizeRect(
+      clampMoveRect({
+        ...rect,
+        left: rect.left + delta.x,
+        top: rect.top + delta.y,
+      }),
+    );
+  };
+
+  const handleResizePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.focus();
+    restoreMoveEnvironment();
+    const rect = materializeRect("resize");
+    if (!rect) return;
+
+    resizeSessionRef.current = {
+      ...rect,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      previousUserSelect: document.body.style.userSelect,
+      previousCursor: document.body.style.cursor,
+    };
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "se-resize";
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      restoreResizeEnvironment();
+    }
+  };
+
+  const handleResizePointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const session = resizeSessionRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    event.preventDefault();
+
+    commitResizeRect(
+      clampResizeRect({
+        left: session.left,
+        top: session.top,
+        width: session.width + event.clientX - session.startX,
+        height: session.height + event.clientY - session.startY,
+      }),
+    );
+  };
+
+  const handleResizePointerEnd = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (resizeSessionRef.current?.pointerId !== event.pointerId) return;
+    restoreResizeEnvironment();
+  };
+
+  const handleResizeKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const step = event.shiftKey ? 32 : 10;
+    const delta = {
+      ArrowLeft: { width: -step, height: 0 },
+      ArrowRight: { width: step, height: 0 },
+      ArrowUp: { width: 0, height: -step },
+      ArrowDown: { width: 0, height: step },
+    }[event.key];
+    if (!delta) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = materializeRect("resize");
+    if (!rect) return;
+    commitResizeRect(
+      clampResizeRect({
+        ...rect,
+        width: rect.width + delta.width,
+        height: rect.height + delta.height,
+      }),
+    );
+  };
+
   // Get provider display name
   const aiConfig = useSettingsStore((s) => s.aiConfig);
   const endpointId = translationConfig.provider.endpointId || aiConfig.activeEndpointId;
@@ -203,17 +490,23 @@ export function TranslationPopover({ text, position, onClose }: TranslationPopov
   return (
     <div
       ref={containerRef}
-      className="fixed z-50"
+      className="fixed z-50 flex min-h-0 flex-col"
       style={{
-        width: POPOVER_WIDTH,
-        left: pos.x,
-        top: pos.y,
-        transform: pos.showAbove ? "translate(-50%, -100%)" : "translate(-50%, 0)",
+        width: explicitRect?.width ?? POPOVER_WIDTH,
+        height: explicitRect?.height,
+        maxHeight: explicitRect ? undefined : POPOVER_MAX_HEIGHT,
+        left: explicitRect?.left ?? pos.x,
+        top: explicitRect?.top ?? pos.y,
+        transform: explicitRect
+          ? "none"
+          : pos.showAbove
+            ? "translate(-50%, -100%)"
+            : "translate(-50%, 0)",
       }}
     >
-      <div className="rounded-lg border border-border bg-background shadow-lg">
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-background shadow-lg">
         {/* Header: Language selector + Close */}
-        <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-1.5">
+        <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5">
           <div className="flex min-w-0 items-center gap-2">
             <div className="relative" ref={langRef}>
               <button
@@ -290,6 +583,22 @@ export function TranslationPopover({ text, position, onClose }: TranslationPopov
           </div>
 
           <button
+            ref={moveHandleRef}
+            type="button"
+            aria-label={t("translation.movePopover", "Move translation window")}
+            title={t("translation.movePopover", "Move translation window")}
+            className="flex min-w-6 flex-1 cursor-move touch-none items-center justify-center self-stretch rounded-sm text-muted-foreground/50 hover:bg-muted hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            onPointerDown={handleMovePointerDown}
+            onPointerMove={handleMovePointerMove}
+            onPointerUp={handleMovePointerEnd}
+            onPointerCancel={handleMovePointerEnd}
+            onLostPointerCapture={handleMovePointerEnd}
+            onKeyDown={handleMoveKeyDown}
+          >
+            <GripHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+
+          <button
             type="button"
             onClick={onClose}
             className="flex h-5 w-5 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -299,7 +608,7 @@ export function TranslationPopover({ text, position, onClose }: TranslationPopov
         </div>
 
         {/* Translation content */}
-        <div className="p-3">
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
           {loading && (
             <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -310,33 +619,51 @@ export function TranslationPopover({ text, position, onClose }: TranslationPopov
           {error && !loading && <div className="py-1 text-sm text-destructive">{error}</div>}
 
           {!loading && !error && translation && (
-            <>
-              <p className="max-h-32 overflow-y-auto text-sm leading-relaxed">{translation}</p>
-              <div className="flex items-center justify-end gap-2 pt-1">
-                <span className="max-w-28 truncate text-[10px] text-muted-foreground">
-                  {providerName}
-                </span>
-                <button
-                  type="button"
-                  onClick={handleCopy}
-                  className="flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-                >
-                  {copied ? (
-                    <>
-                      <Check className="h-3 w-3" />
-                      <span>{t("common.copied")}</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="h-3 w-3" />
-                      <span>{t("common.copy")}</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </>
+            <p className="text-sm leading-relaxed">{translation}</p>
           )}
         </div>
+
+        {!loading && !error && translation && (
+          <div className="flex shrink-0 items-center justify-end gap-2 px-3 pb-2 pr-7 pt-1">
+            <span className="max-w-28 truncate text-[10px] text-muted-foreground">
+              {providerName}
+            </span>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              {copied ? (
+                <>
+                  <Check className="h-3 w-3" />
+                  <span>{t("common.copied")}</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="h-3 w-3" />
+                  <span>{t("common.copy")}</span>
+                </>
+              )}
+            </button>
+          </div>
+        )}
+
+        <button
+          ref={resizeGripRef}
+          type="button"
+          aria-label={t("translation.resizePopover", "Resize translation window")}
+          title={t("translation.resizePopover", "Resize translation window")}
+          className="absolute bottom-0 right-0 flex h-6 w-6 items-end justify-end rounded-tl-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          style={{ touchAction: "none", cursor: "se-resize" }}
+          onPointerDown={handleResizePointerDown}
+          onPointerMove={handleResizePointerMove}
+          onPointerUp={handleResizePointerEnd}
+          onPointerCancel={handleResizePointerEnd}
+          onLostPointerCapture={handleResizePointerEnd}
+          onKeyDown={handleResizeKeyDown}
+        >
+          <Scaling className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
       </div>
     </div>
   );

@@ -461,6 +461,8 @@ export async function initDatabase(): Promise<void> {
       citations TEXT,
       tool_calls TEXT,
       reasoning TEXT,
+      parts TEXT,
+      parts_order TEXT,
       created_at INTEGER NOT NULL,
       FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
     )
@@ -532,6 +534,11 @@ export async function initDatabase(): Promise<void> {
       }
       try {
         await database.execute("ALTER TABLE messages ADD COLUMN parts_order TEXT");
+      } catch {
+        // Column already exists, ignore
+      }
+      try {
+        await database.execute("ALTER TABLE messages ADD COLUMN parts TEXT");
       } catch {
         // Column already exists, ignore
       }

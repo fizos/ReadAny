@@ -70,6 +70,60 @@ describe("isOutputLimitTermination", () => {
 });
 
 describe("streamReadingAgent tool registration", () => {
+  it.each(["请联网搜索 ReadAny 最新版本", "What is the latest OpenAI release today?"])(
+    "routes web requests to web tools only: %s",
+    async (question) => {
+      createReactAgentMock.mockReturnValue({
+        streamEvents: vi.fn(() => ({
+          [Symbol.asyncIterator]: async function* () {
+            // no-op stream
+          },
+        })),
+      });
+      const webTools: ToolDefinition[] = [
+        {
+          name: "webSearch",
+          description: "Search the web",
+          parameters: { query: { type: "string", description: "Query", required: true } },
+          execute: vi.fn(async () => ({ results: [] })),
+        },
+        {
+          name: "webFetch",
+          description: "Read a web page",
+          parameters: { url: { type: "string", description: "URL", required: true } },
+          execute: vi.fn(async () => ({ text: "" })),
+        },
+        {
+          name: "listBooks",
+          description: "List books",
+          parameters: {},
+          execute: vi.fn(async () => []),
+        },
+      ];
+
+      for await (const _event of streamReadingAgent(
+        {
+          aiConfig: makeAIConfig(),
+          book: null,
+          bookId: null,
+          semanticContext: null,
+          enabledSkills: [],
+          isVectorized: false,
+          getAvailableTools: () => webTools,
+        },
+        question,
+      )) {
+        // drain stream
+      }
+
+      const call = createReactAgentMock.mock.calls[createReactAgentMock.mock.calls.length - 1]?.[0];
+      expect((call.tools as ToolDefinition[]).map((tool) => tool.name)).toEqual([
+        "webSearch",
+        "webFetch",
+      ]);
+    },
+  );
+
   it("returns a friendly message without calling the model for oversized input", async () => {
     const events = [];
 

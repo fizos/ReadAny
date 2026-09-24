@@ -5,6 +5,16 @@ export { eventBus } from "./event-bus";
 export type { EventMap } from "./event-bus";
 export { convertToMessageV2, mergeMessagesWithStreaming } from "./chat-utils";
 export {
+  CHAT_IMAGE_LIMITS,
+  ChatImageQuotaError,
+  getGlobalThreadImageBytes,
+  getImageDataUrlBytes,
+  getImageParts,
+  getMessageImageBytes,
+  getThreadImageBytes,
+  validateChatImageQuotas,
+} from "./chat-images";
+export {
   exportChatAsMarkdown,
   exportChatAsJSON,
   formatChatForClipboard,

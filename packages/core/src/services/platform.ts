@@ -35,6 +35,19 @@ export interface FileTransferOptions {
   onProgress?: (loaded: number, total: number) => void;
 }
 
+/** Result returned by the desktop SSRF-safe web fetch command. */
+export interface SafeWebFetchResult {
+  finalUrl: string;
+  status: number;
+  contentType: string;
+  body: string;
+}
+
+/** Explicit platform capabilities used to keep unsupported network paths off mobile/web. */
+export interface PlatformCapabilities {
+  safeWebFetch: boolean;
+}
+
 export interface UpdateInfo {
   version: string;
   notes?: string;
@@ -61,6 +74,8 @@ export interface IPlatformService {
   readonly platformType: "desktop" | "mobile" | "web";
   readonly isMobile: boolean;
   readonly isDesktop: boolean;
+  /** Optional for backwards-compatible test/CLI platform adapters. */
+  readonly capabilities?: PlatformCapabilities;
 
   // ---- Language / Locale ----
   // Returns the system locale, e.g. "en-US", "zh-CN", "ja-JP"
@@ -91,6 +106,8 @@ export interface IPlatformService {
 
   // ---- Network (for scenarios requiring custom headers) ----
   fetch(url: string, options?: FetchOptions): Promise<Response>;
+  /** Fetch public HTTP(S) content through the platform's SSRF-safe path. */
+  safeWebFetch?(url: string): Promise<SafeWebFetchResult>;
   downloadFile?(url: string, filePath: string, options?: FileTransferOptions): Promise<void>;
   uploadFile?(url: string, filePath: string, options?: FileTransferOptions): Promise<void>;
   createWebSocket(url: string, options?: WebSocketOptions): Promise<IWebSocket>;

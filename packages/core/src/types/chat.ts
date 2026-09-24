@@ -11,6 +11,17 @@ export interface AttachedQuote {
   source?: string;
 }
 
+/** A compressed image attached to a chat message. */
+export interface AttachedImage {
+  id: string;
+  name: string;
+  mimeType: "image/jpeg" | "image/webp";
+  dataUrl: string;
+  size: number;
+  width?: number;
+  height?: number;
+}
+
 export type MessageRole = "user" | "assistant" | "system";
 
 export interface Citation {
@@ -53,13 +64,15 @@ export interface Message {
   citations?: Citation[];
   toolCalls?: ToolCall[];
   reasoning?: ReasoningStep[];
+  /** Ordered, renderable parts. Kept optional for legacy database rows. */
+  parts?: import("./message").Part[];
   partsOrder?: PartsOrderEntry[];
   createdAt: number;
 }
 
 /** Records the order of parts as they appeared during streaming */
 export interface PartsOrderEntry {
-  type: "text" | "quote" | "reasoning" | "tool_call" | "citation" | "mindmap";
+  type: "text" | "quote" | "image" | "reasoning" | "tool_call" | "citation" | "mindmap";
   id: string;
   /** For text parts, stores the text content so we can reconstruct separate text segments */
   text?: string;
@@ -71,6 +84,9 @@ export interface PartsOrderEntry {
   citationIndex?: number;
   title?: string;
   markdown?: string;
+  name?: string;
+  mimeType?: string;
+  dataUrl?: string;
 }
 
 export interface Thread {
@@ -157,6 +173,8 @@ export interface AIEndpoint {
   models: string[];
   modelsFetched: boolean;
   modelsFetching?: boolean;
+  /** Whether the selected endpoint/model accepts image content blocks. */
+  visionEnabled?: boolean;
 }
 
 export interface AIConfig {

@@ -121,6 +121,11 @@ const migrations: Migration[] = [
       "ALTER TABLE threads ADD COLUMN memory_message_count INTEGER DEFAULT 0",
     ],
   },
+  {
+    version: 14,
+    description: "Persist ordered chat parts including image attachments",
+    up: "ALTER TABLE messages ADD COLUMN parts TEXT",
+  },
 ];
 
 /** Run pending migrations */

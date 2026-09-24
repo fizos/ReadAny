@@ -2,7 +2,7 @@
  * MessageList — scrollable message list with streaming support
  * Uses Part-based rendering for real-time updates
  */
-import type { CitationPart, MessageV2, QuotePart } from "@readany/core/types/message";
+import type { CitationPart, ImagePart, MessageV2, QuotePart } from "@readany/core/types/message";
 import { ArrowDown, Check, Copy, Quote } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -170,6 +170,24 @@ function UserQuoteBlock({ part }: { part: QuotePart }) {
   );
 }
 
+function UserImageBlock({ part }: { part: ImagePart }) {
+  return (
+    <figure className="overflow-hidden rounded-lg border border-primary/15 bg-primary/5">
+      <img
+        src={part.image.dataUrl}
+        alt={part.image.name}
+        className="max-h-64 max-w-full object-contain"
+      />
+      <figcaption
+        className="truncate px-2 py-1 text-[10px] text-muted-foreground"
+        title={part.image.name}
+      >
+        {part.image.name}
+      </figcaption>
+    </figure>
+  );
+}
+
 /** Extract plain text from a message's parts for clipboard copy */
 function extractMessageText(message: MessageV2): string {
   return message.parts
@@ -203,6 +221,7 @@ function CopyMessageButton({ message }: { message: MessageV2 }) {
 function MessageBubble({ message, onCitationClick, isStreaming, currentStep }: MessageBubbleProps) {
   if (message.role === "user") {
     const quoteParts = message.parts.filter((p) => p.type === "quote") as QuotePart[];
+    const imageParts = message.parts.filter((p) => p.type === "image") as ImagePart[];
     const textParts = message.parts.filter((p) => p.type === "text");
     const hasQuotes = quoteParts.length > 0;
 
@@ -213,6 +232,13 @@ function MessageBubble({ message, onCitationClick, isStreaming, currentStep }: M
             <div className="mb-2 flex flex-col gap-1.5">
               {quoteParts.map((q) => (
                 <UserQuoteBlock key={q.id} part={q} />
+              ))}
+            </div>
+          )}
+          {imageParts.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {imageParts.map((part) => (
+                <UserImageBlock key={part.id} part={part} />
               ))}
             </div>
           )}

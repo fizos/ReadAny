@@ -12,6 +12,7 @@ import type {
   IDatabase,
   IPlatformService,
   IWebSocket,
+  SafeWebFetchResult,
   UpdateInfo,
   WebSocketOptions,
 } from "@readany/core/services";
@@ -80,6 +81,7 @@ export class TauriPlatformService implements IPlatformService {
   readonly platformType = "desktop" as const;
   readonly isMobile = false;
   readonly isDesktop = true;
+  readonly capabilities = { safeWebFetch: isTauriRuntimeAvailable() } as const;
 
   // ---- File system ----
 
@@ -195,10 +197,10 @@ export class TauriPlatformService implements IPlatformService {
       ...fetchOptions
     } = options ?? {};
     const tauriOptions = allowInsecure
-      ? {
+      ? ({
           ...fetchOptions,
           danger: { acceptInvalidCerts: true, acceptInvalidHostnames: true },
-        } as any
+        } as any)
       : fetchOptions;
     try {
       return await tauriFetch(url, tauriOptions);
@@ -221,6 +223,25 @@ export class TauriPlatformService implements IPlatformService {
       }
       throw error;
     }
+  }
+
+  async safeWebFetch(url: string): Promise<SafeWebFetchResult> {
+    if (!isTauriRuntimeAvailable()) {
+      throw new Error("Tauri desktop runtime is required for safe web fetch");
+    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    const response = await invoke<{
+      final_url: string;
+      status: number;
+      content_type: string;
+      body: string;
+    }>("safe_web_fetch", { url });
+    return {
+      finalUrl: response.final_url,
+      status: response.status,
+      contentType: response.content_type,
+      body: response.body,
+    };
   }
 
   async createWebSocket(url: string, options?: WebSocketOptions): Promise<IWebSocket> {

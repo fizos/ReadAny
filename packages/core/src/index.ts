@@ -24,6 +24,8 @@ export type {
   FilePickerOptions,
   WebSocketOptions,
   UpdateInfo,
+  SafeWebFetchResult,
+  PlatformCapabilities,
 } from "./services";
 export { setPlatformService, getPlatformService } from "./services";
 
@@ -76,4 +78,8 @@ export type {
 export { readEpubChapterFromBookFile, readEpubChapterFromDraft } from "./epub/chapter";
 export type { EpubChapterReadResult } from "./epub/chapter";
 export { searchKnowledge } from "./knowledge/search";
-export type { KnowledgeSearchHit, KnowledgeSearchResult, KnowledgeSearchSource } from "./knowledge/search";
+export type {
+  KnowledgeSearchHit,
+  KnowledgeSearchResult,
+  KnowledgeSearchSource,
+} from "./knowledge/search";

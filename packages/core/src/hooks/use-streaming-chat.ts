@@ -14,6 +14,7 @@ import { getChatStreamingKey, useChatStore } from "../stores/chat-store";
 import { useSettingsStore } from "../stores/settings-store";
 import type {
   AIConfig,
+  AttachedImage,
   AttachedQuote,
   Book,
   CitationPart,
@@ -29,6 +30,7 @@ import type {
 import {
   createAbortedPart,
   createCitationPart,
+  createImagePart,
   createMindmapPart,
   createQuotePart,
   createReasoningPart,
@@ -40,7 +42,14 @@ import type { MindmapPart } from "../types/message";
 function buildPartsOrder(parts: Part[]) {
   return parts.map((p) => {
     const base = {
-      type: p.type as "text" | "reasoning" | "tool_call" | "citation" | "mindmap",
+      type: p.type as
+        | "text"
+        | "quote"
+        | "image"
+        | "reasoning"
+        | "tool_call"
+        | "citation"
+        | "mindmap",
       id: p.id,
     };
     if (p.type === "text") {
@@ -62,6 +71,13 @@ function buildPartsOrder(parts: Part[]) {
         cfi: (p as CitationPart).cfi,
         text: (p as CitationPart).text,
         citationIndex: (p as CitationPart).citationIndex,
+      };
+    }
+    if (p.type === "image") {
+      return {
+        ...base,
+        name: p.image.name,
+        mimeType: p.image.mimeType,
       };
     }
     return base;
@@ -125,6 +141,7 @@ export function useStreamingChat(options?: StreamingChatOptions) {
 
   const createThread = useChatStore((s) => s.createThread);
   const addMessage = useChatStore((s) => s.addMessage);
+  const loadAllThreads = useChatStore((s) => s.loadAllThreads);
   const updateThreadTitle = useChatStore((s) => s.updateThreadTitle);
   const startStreamingSession = useChatStore((s) => s.startStreamingSession);
   const updateStreamingSession = useChatStore((s) => s.updateStreamingSession);
@@ -186,13 +203,23 @@ export function useStreamingChat(options?: StreamingChatOptions) {
       spoilerFree = false,
       quotes?: AttachedQuote[],
       aiConfigOverride?: AIConfig,
-    ) => {
+      attachedImages: AttachedImage[] = [],
+    ): Promise<boolean> => {
       const bookId = overrideBookId ?? options?.bookId;
       const sessionKey = getChatStreamingKey(bookId);
       const activeSession = useChatStore.getState().streamingSessions[sessionKey];
-      if ((!content.trim() && (!quotes || quotes.length === 0)) || activeSession?.isStreaming) {
-        return;
+      if (
+        (!content.trim() && (!quotes || quotes.length === 0) && attachedImages.length === 0) ||
+        activeSession?.isStreaming
+      ) {
+        return false;
       }
+
+      const effectiveAIConfig = aiConfigOverride || aiConfig;
+      const activeEndpoint = effectiveAIConfig.endpoints.find(
+        (endpoint) => endpoint.id === effectiveAIConfig.activeEndpointId,
+      );
+      if (attachedImages.length > 0 && !activeEndpoint?.visionEnabled) return false;
 
       const messageId = createMessageId();
       const initialMessage: MessageV2 = {
@@ -203,9 +230,12 @@ export function useStreamingChat(options?: StreamingChatOptions) {
         createdAt: Date.now(),
       };
       let clearPendingPublish: (() => void) | null = null;
+      let didStart = false;
 
       try {
-        const thread = await getOrCreateThread(bookId);
+        let thread = await getOrCreateThread(bookId);
+        await loadAllThreads();
+        thread = useChatStore.getState().threads.find((item) => item.id === thread.id) || thread;
         initialMessage.threadId = thread.id;
 
         if (thread.messages.length === 0 && !thread.title) {
@@ -227,6 +257,9 @@ export function useStreamingChat(options?: StreamingChatOptions) {
             userParts.push(createQuotePart(q.text, q.source));
           }
         }
+        if (attachedImages.length > 0) {
+          userParts.push(...attachedImages.map((image) => createImagePart(image)));
+        }
         if (content.trim()) {
           userParts.push(createTextPart(content.trim()));
         }
@@ -238,13 +271,22 @@ export function useStreamingChat(options?: StreamingChatOptions) {
           content: aiPrompt,
           parts: userParts,
           partsOrder: userParts.map((p) => ({
-            type: p.type as "text" | "quote",
+            type: p.type as "text" | "quote" | "image",
             id: p.id,
             ...(p.type === "text" ? { text: (p as TextPart).text } : {}),
             ...(p.type === "quote" ? { text: (p as any).text, source: (p as any).source } : {}),
+            ...(p.type === "image" ? { name: p.image.name, mimeType: p.image.mimeType } : {}),
           })),
           createdAt: Date.now(),
         };
+
+        const { validateChatImageQuotas } = await import("../utils/chat-images");
+        validateChatImageQuotas({
+          threadId: thread.id,
+          content: aiPrompt,
+          images: attachedImages,
+          threads: useChatStore.getState().threads,
+        });
 
         // Add user message to store FIRST so it renders immediately
         await addMessage(thread.id, userMessage as any);
@@ -261,6 +303,7 @@ export function useStreamingChat(options?: StreamingChatOptions) {
           startedAt: Date.now(),
           updatedAt: Date.now(),
         });
+        didStart = true;
 
         const stream = new StreamingChat();
         activeStreams.set(sessionKey, stream);
@@ -350,14 +393,15 @@ export function useStreamingChat(options?: StreamingChatOptions) {
         const streamBook = await resolveFreshBook(bookId, options?.book);
         const streamIsVectorized = streamBook?.isVectorized ?? false;
 
-        await stream.stream({
+        void stream.stream({
           thread: threadForStream,
           book: streamBook,
           bookId,
           semanticContext: options?.semanticContext || null,
           enabledSkills,
           isVectorized: streamIsVectorized,
-          aiConfig: aiConfigOverride || aiConfig,
+          aiConfig: effectiveAIConfig,
+          images: attachedImages,
           deepThinking,
           spoilerFree,
           getAvailableTools,
@@ -568,6 +612,7 @@ export function useStreamingChat(options?: StreamingChatOptions) {
             flushCurrentMessage();
           },
         });
+        return true;
       } catch (err) {
         clearPendingPublish?.();
         const errorMessage = err instanceof Error ? err.message : "Unknown error";
@@ -579,11 +624,14 @@ export function useStreamingChat(options?: StreamingChatOptions) {
           updatedAt: Date.now(),
         });
         activeStreams.delete(sessionKey);
+        if (!didStart) throw err;
+        return false;
       }
     },
     [
       getOrCreateThread,
       addMessage,
+      loadAllThreads,
       updateThreadTitle,
       startStreamingSession,
       updateStreamingSession,

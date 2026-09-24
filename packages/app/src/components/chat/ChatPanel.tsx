@@ -6,7 +6,7 @@ import { useStreamingChat } from "@/hooks/use-streaming-chat";
 import { useChatStore } from "@/stores/chat-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { getPlatformService } from "@readany/core/services";
-import type { Book, CitationPart } from "@readany/core/types";
+import type { AttachedImage, Book, CitationPart } from "@readany/core/types";
 import {
   convertToMessageV2,
   exportChatAsJSON,
@@ -43,6 +43,11 @@ interface ChatPanelProps {
 export function ChatPanel({ book, onNavigateToCitation }: ChatPanelProps) {
   const { t } = useTranslation();
   const bookId = book?.id;
+  const visionEnabled = useSettingsStore(
+    (s) =>
+      s.aiConfig.endpoints.find((endpoint) => endpoint.id === s.aiConfig.activeEndpointId)
+        ?.visionEnabled === true,
+  );
 
   const threads = useChatStore((s) => s.threads);
   const loadThreads = useChatStore((s) => s.loadThreads);
@@ -108,19 +113,39 @@ export function ChatPanel({ book, onNavigateToCitation }: ChatPanelProps) {
   }, [showExportMenu]);
 
   const handleSend = useCallback(
-    (content: string, deepThinking = false, spoilerFree = false, quotes?: AttachedQuote[]) => {
+    async (
+      content: string,
+      deepThinking = false,
+      spoilerFree = false,
+      quotes?: AttachedQuote[],
+      images?: AttachedImage[],
+    ): Promise<boolean> => {
       const { aiConfig } = useSettingsStore.getState();
       const endpoint = aiConfig.endpoints.find((e) => e.id === aiConfig.activeEndpointId);
       const needsKey = endpoint ? providerRequiresApiKey(endpoint.provider) : true;
       if (!endpoint || (needsKey && !endpoint.apiKey) || !aiConfig.activeModel) {
         setConfigGuide("ai");
-        return;
+        return false;
       }
 
-      sendMessage(content, bookId, deepThinking, spoilerFree, quotes);
-      setAttachedQuotes([]);
+      try {
+        const accepted = await sendMessage(
+          content,
+          bookId,
+          deepThinking,
+          spoilerFree,
+          quotes,
+          undefined,
+          images,
+        );
+        if (accepted) setAttachedQuotes([]);
+        return accepted;
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : t("common.failed", "发送失败"));
+        return false;
+      }
     },
-    [sendMessage, bookId],
+    [sendMessage, bookId, t],
   );
 
   const handleRemoveQuote = useCallback((id: string) => {
@@ -475,6 +500,7 @@ export function ChatPanel({ book, onNavigateToCitation }: ChatPanelProps) {
           placeholder={t("chat.askBookPlaceholder")}
           quotes={attachedQuotes}
           onRemoveQuote={handleRemoveQuote}
+          visionEnabled={visionEnabled}
         />
       </div>
 

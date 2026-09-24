@@ -7,5 +7,7 @@ export type {
   FilePickerOptions,
   WebSocketOptions,
   UpdateInfo,
+  SafeWebFetchResult,
+  PlatformCapabilities,
 } from "./platform";
 export { setPlatformService, getPlatformService, waitForPlatformService } from "./platform";

@@ -2,8 +2,9 @@
  * Message Part Types - Inspired by OpenCode's Part system
  *
  * Messages are composed of multiple Parts, each with its own type and state.
- * This enables real-time streaming of individual parts (reasoning, tools, text).
+ * This enables real-time streaming of individual parts (reasoning, tools, text, images).
  */
+import type { AttachedImage } from "./chat";
 
 export type PartStatus = "pending" | "running" | "completed" | "error";
 
@@ -55,6 +56,12 @@ export interface QuotePart extends BasePart {
   source?: string;
 }
 
+/** A user-attached image. The data URL is compressed before it reaches this type. */
+export interface ImagePart extends BasePart {
+  type: "image";
+  image: AttachedImage;
+}
+
 /** A mindmap visualization generated from content */
 export interface MindmapPart extends BasePart {
   type: "mindmap";
@@ -81,6 +88,7 @@ export type Part =
   | ToolCallPart
   | CitationPart
   | QuotePart
+  | ImagePart
   | MindmapPart
   | MermaidPart
   | AbortedPart;
@@ -221,6 +229,20 @@ export function createQuotePart(text: string, source?: string): QuotePart {
     status: "completed",
     createdAt: Date.now(),
   };
+}
+
+export function createImagePart(image: AttachedImage): ImagePart {
+  return {
+    id: image.id,
+    type: "image",
+    image,
+    status: "completed",
+    createdAt: Date.now(),
+  };
+}
+
+export function isImagePart(part: Part): part is ImagePart {
+  return part.type === "image";
 }
 
 export function createMindmapPart(title: string, markdown: string): MindmapPart {

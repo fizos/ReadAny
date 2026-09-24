@@ -113,6 +113,8 @@
     "ai_exactRequestUrlLabel": "完整请求地址",
     "ai_exactRequestUrlDesc": "启用后将按你填写的地址原样请求，不再自动追加 /v1、/chat/completions 或 /models。",
     "ai_exactRequestUrlFetchHint": "完全自定义请求地址模式下无法自动推断模型列表地址，请手动添加模型后再测试。",
+    "ai_visionEnabled": "支持图片输入",
+    "ai_visionEnabledDesc": "仅当当前模型支持视觉输入时开启。",
     "ai_testModel": "测试模型",
     "ai_testModelAuto": "自动选择首个可用模型",
     "ai_fetchingModels": "拉取中...",

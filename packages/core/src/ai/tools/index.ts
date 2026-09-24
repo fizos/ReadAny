@@ -1,3 +1,4 @@
+import { getPlatformService } from "../../services/platform";
 /**
  * AI Tool registration — conditional tool registration based on book state
  * Full implementation with RAG search pipeline integration
@@ -48,6 +49,7 @@ import {
 } from "./rag-tools";
 import { createGetSkillsTool, skillToTool } from "./skill-tools";
 import type { ToolDefinition } from "./tool-types";
+import { createWebFetchTool, createWebSearchTool } from "./web-tools";
 
 // Re-export types and key functions for external consumers
 export type { ToolDefinition, ToolParameter } from "./tool-types";
@@ -55,7 +57,7 @@ export { getContextTools } from "./context-tools";
 
 /** Get general (non-book-specific) tools */
 function getGeneralTools(): ToolDefinition[] {
-  return [
+  const tools = [
     createListBooksTool(),
     createSearchAllHighlightsTool(),
     createSearchAllNotesTool(),
@@ -68,6 +70,19 @@ function getGeneralTools(): ToolDefinition[] {
     createUpdateBookMetadataTool(),
     createManageBookGroupsTool(),
   ];
+
+  // Web tools are desktop-only. Checking the platform here keeps them out of
+  // the model's advertised tool list on Expo and during early initialization.
+  try {
+    const platform = getPlatformService();
+    if (platform.capabilities?.safeWebFetch && platform.safeWebFetch) {
+      tools.push(createWebSearchTool(), createWebFetchTool());
+    }
+  } catch {
+    // Platform service is not initialized yet (for example in isolated tests).
+  }
+
+  return tools;
 }
 
 /** Get available tools based on current state */

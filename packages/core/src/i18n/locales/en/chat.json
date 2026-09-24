@@ -60,7 +60,15 @@
     "selectAndCopy": "Long-press text to select and copy",
     "selectBooks": "Select book context",
     "threads": "Conversations",
-    "untitled": "Untitled"
+    "untitled": "Untitled",
+    "attachImage": "Attach image",
+    "visionDisabled": "Enable image input for this endpoint in AI settings first.",
+    "imageRawTooLarge": "Image \"{{name}}\" is larger than 10 MB.",
+    "imageCompressionFailed": "Could not prepare image \"{{name}}\".",
+    "imageLimit": "You can attach up to 2 images.",
+    "imageTooLarge": "Image \"{{name}}\" is larger than 700 KB after compression.",
+    "imageTotalTooLarge": "Attached images exceed the 1.5 MB limit.",
+    "removeImage": "Remove image"
   },
   "streaming": {
     "thinking": "Thinking...",

@@ -3,8 +3,54 @@
  * Supports AI (using existing AI config) and DeepL
  */
 
+import { getPlatformService } from "../services/platform";
 import { buildOpenAICompatibleUrl } from "../utils/api";
 import type { TranslationProvider, TranslatorName } from "./types";
+
+type TranslationFetch = (url: string, init?: RequestInit) => Promise<Response>;
+
+function getTranslationFetch(): TranslationFetch {
+  try {
+    const platform = getPlatformService();
+    return (url, init) => platform.fetch(url, init);
+  } catch {
+    return (url, init) => globalThis.fetch(url, init);
+  }
+}
+
+function extractAICompletionContent(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "";
+  const choices = (payload as { choices?: unknown }).choices;
+  if (!Array.isArray(choices) || !choices[0] || typeof choices[0] !== "object") return "";
+
+  const choice = choices[0] as {
+    delta?: { content?: unknown };
+    message?: { content?: unknown };
+    text?: unknown;
+  };
+  const content = choice.delta?.content ?? choice.message?.content ?? choice.text;
+  return typeof content === "string" ? content : "";
+}
+
+async function readAICompletionContent(response: Response): Promise<string> {
+  const body = await response.text();
+  const isEventStream =
+    response.headers.get("content-type")?.toLowerCase().includes("text/event-stream") ||
+    body.trimStart().startsWith("data:");
+
+  if (!isEventStream) {
+    return extractAICompletionContent(JSON.parse(body));
+  }
+
+  const chunks: string[] = [];
+  for (const line of body.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice(5).trim();
+    if (!data || data === "[DONE]") continue;
+    chunks.push(extractAICompletionContent(JSON.parse(data)));
+  }
+  return chunks.join("");
+}
 
 /** Get language display name */
 function getLanguageName(code: string): string {
@@ -82,7 +128,7 @@ export async function aiTranslate(
 
   // For single text, use simple translation
   if (texts.length === 1) {
-    const response = await fetch(requestUrl, {
+    const response = await getTranslationFetch()(requestUrl, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -96,6 +142,7 @@ export async function aiTranslate(
         ],
         temperature: 0.3,
         max_tokens: 2048,
+        stream: false,
       }),
     });
 
@@ -104,15 +151,15 @@ export async function aiTranslate(
       throw new Error(`AI API error (${response.status}): ${error}`);
     }
 
-    const data = await response.json();
-    return [data.choices[0]?.message?.content?.trim() || texts[0]];
+    const content = await readAICompletionContent(response);
+    return [content.trim() || texts[0]];
   }
 
   // For multiple texts, translate individually
   return Promise.all(
     texts.map(async (text) => {
       try {
-        const response = await fetch(requestUrl, {
+        const response = await getTranslationFetch()(requestUrl, {
           method: "POST",
           headers,
           body: JSON.stringify({
@@ -126,14 +173,15 @@ export async function aiTranslate(
             ],
             temperature: 0.3,
             max_tokens: 2048,
+            stream: false,
           }),
         });
         if (!response.ok) {
           console.warn(`[aiTranslate] API error for text: ${response.status}`);
           return "";
         }
-        const data = await response.json();
-        return data.choices[0]?.message?.content?.trim() || "";
+        const content = await readAICompletionContent(response);
+        return content.trim();
       } catch (err) {
         console.warn("[aiTranslate] Individual translation failed:", err);
         return "";
@@ -159,15 +207,7 @@ export async function aiTranslateBatch(
 ): Promise<string[]> {
   // Single text — just delegate
   if (texts.length <= 1) {
-    return aiTranslate(
-      texts,
-      sourceLang,
-      targetLang,
-      apiKey,
-      baseUrl,
-      model,
-      useExactRequestUrl,
-    );
+    return aiTranslate(texts, sourceLang, targetLang, apiKey, baseUrl, model, useExactRequestUrl);
   }
 
   const requestUrl = buildOpenAICompatibleUrl(
@@ -187,7 +227,7 @@ export async function aiTranslateBatch(
   const numberedInput = texts.map((t, i) => `${i + 1}. ${t}`).join("\n");
 
   try {
-    const response = await fetch(requestUrl, {
+    const response = await getTranslationFetch()(requestUrl, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -201,6 +241,7 @@ export async function aiTranslateBatch(
         ],
         temperature: 0.3,
         max_tokens: 4096,
+        stream: false,
       }),
     });
 
@@ -209,8 +250,7 @@ export async function aiTranslateBatch(
       throw new Error(`AI API error (${response.status}): ${error}`);
     }
 
-    const data = await response.json();
-    const content: string = data.choices[0]?.message?.content?.trim() || "";
+    const content = (await readAICompletionContent(response)).trim();
 
     // Parse numbered output
     const parsed = parseNumberedTranslation(content, texts.length);
@@ -223,15 +263,7 @@ export async function aiTranslateBatch(
   }
 
   // Fallback to individual
-  return aiTranslate(
-    texts,
-    sourceLang,
-    targetLang,
-    apiKey,
-    baseUrl,
-    model,
-    useExactRequestUrl,
-  );
+  return aiTranslate(texts, sourceLang, targetLang, apiKey, baseUrl, model, useExactRequestUrl);
 }
 
 /** Parse "1. xxx\n2. yyy\n..." format into an array */
@@ -283,14 +315,20 @@ export function getDeepLUrl(baseUrl: string | undefined, path: "translate" | "us
 }
 
 function isOfficialDeepLHost(hostname: string): boolean {
-  return hostname === "api.deepl.com" || hostname === "api-free.deepl.com" || hostname.endsWith(".deepl.com");
+  return (
+    hostname === "api.deepl.com" ||
+    hostname === "api-free.deepl.com" ||
+    hostname.endsWith(".deepl.com")
+  );
 }
 
 function resolveDeepLConfig(baseUrl: string | undefined, apiKey: string): ResolvedDeepLConfig {
   const rawBaseUrl = baseUrl?.trim();
   const normalizedBaseUrl = normalizeDeepLBaseUrl(rawBaseUrl);
   const url = new URL(normalizedBaseUrl);
-  const rawPathSegments = (rawBaseUrl ? new URL(rawBaseUrl) : url).pathname.split("/").filter(Boolean);
+  const rawPathSegments = (rawBaseUrl ? new URL(rawBaseUrl) : url).pathname
+    .split("/")
+    .filter(Boolean);
   const pathSegments = [...rawPathSegments];
   const hasTranslateSuffix = (rawBaseUrl || "").replace(/\/+$/, "").endsWith("/translate");
   const exactTranslateUrl = hasTranslateSuffix ? (rawBaseUrl || "").replace(/\/+$/, "") : undefined;
@@ -329,7 +367,12 @@ function resolveDeepLConfig(baseUrl: string | undefined, apiKey: string): Resolv
 }
 
 function extractDeepLXTranslation(data: any): string | null {
-  const candidate = typeof data?.data === "string" ? data.data : typeof data?.translation === "string" ? data.translation : null;
+  const candidate =
+    typeof data?.data === "string"
+      ? data.data
+      : typeof data?.translation === "string"
+        ? data.translation
+        : null;
   if (!candidate) {
     return null;
   }
@@ -370,7 +413,7 @@ async function deeplTranslateOfficial(
     params.append("source_lang", sourceLang.toUpperCase());
   }
 
-  const response = await fetch(`${requestBaseUrl}/translate`, {
+  const response = await getTranslationFetch()(`${requestBaseUrl}/translate`, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
@@ -421,7 +464,7 @@ async function deeplTranslateDeepLX(
         headers.Authorization = `Bearer ${apiKey}`;
       }
 
-      const response = await fetch(translateUrl.toString(), {
+      const response = await getTranslationFetch()(translateUrl.toString(), {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -569,21 +612,123 @@ export function toMicrosoftLangCode(lang: string): string {
 
 /** Microsoft supported source languages (subset for validation) */
 const MS_SUPPORTED_LANGS = new Set([
-  "af", "am", "ar", "as", "az", "ba", "bg", "bn", "bo", "bs", "ca", "cs", "cy", "da", "de",
-  "dv", "el", "en", "es", "et", "eu", "fa", "fi", "fil", "fj", "fo", "fr", "ga", "gl", "gu",
-  "ha", "he", "hi", "hr", "ht", "hu", "hy", "id", "ig", "ikt", "is", "it", "iu", "ja", "ka",
-  "kk", "km", "kn", "ko", "ku", "ky", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn",
-  "mr", "ms", "mt", "my", "nb", "ne", "nl", "no", "or", "pa", "pl", "ps", "pt", "ro", "ru",
-  "rw", "sd", "si", "sk", "sl", "sm", "sn", "so", "sq", "sr", "st", "sv", "sw", "ta", "te",
-  "th", "ti", "tk", "tl", "tn", "to", "tr", "tt", "ty", "ug", "uk", "ur", "uz", "vi", "xh",
-  "yo", "yue", "zh-Hans", "zh-Hant", "zu",
+  "af",
+  "am",
+  "ar",
+  "as",
+  "az",
+  "ba",
+  "bg",
+  "bn",
+  "bo",
+  "bs",
+  "ca",
+  "cs",
+  "cy",
+  "da",
+  "de",
+  "dv",
+  "el",
+  "en",
+  "es",
+  "et",
+  "eu",
+  "fa",
+  "fi",
+  "fil",
+  "fj",
+  "fo",
+  "fr",
+  "ga",
+  "gl",
+  "gu",
+  "ha",
+  "he",
+  "hi",
+  "hr",
+  "ht",
+  "hu",
+  "hy",
+  "id",
+  "ig",
+  "ikt",
+  "is",
+  "it",
+  "iu",
+  "ja",
+  "ka",
+  "kk",
+  "km",
+  "kn",
+  "ko",
+  "ku",
+  "ky",
+  "ln",
+  "lo",
+  "lt",
+  "lv",
+  "mg",
+  "mi",
+  "mk",
+  "ml",
+  "mn",
+  "mr",
+  "ms",
+  "mt",
+  "my",
+  "nb",
+  "ne",
+  "nl",
+  "no",
+  "or",
+  "pa",
+  "pl",
+  "ps",
+  "pt",
+  "ro",
+  "ru",
+  "rw",
+  "sd",
+  "si",
+  "sk",
+  "sl",
+  "sm",
+  "sn",
+  "so",
+  "sq",
+  "sr",
+  "st",
+  "sv",
+  "sw",
+  "ta",
+  "te",
+  "th",
+  "ti",
+  "tk",
+  "tl",
+  "tn",
+  "to",
+  "tr",
+  "tt",
+  "ty",
+  "ug",
+  "uk",
+  "ur",
+  "uz",
+  "vi",
+  "xh",
+  "yo",
+  "yue",
+  "zh-Hans",
+  "zh-Hant",
+  "zu",
 ]);
 
 /** Get or refresh the free Microsoft Edge translate JWT token */
 async function getMicrosoftToken(): Promise<string> {
   if (_msToken && Date.now() < _msTokenExpiry) return _msToken;
 
-  const resp = await fetch("https://edge.microsoft.com/translate/auth");
+  const resp = await getTranslationFetch()("https://edge.microsoft.com/translate/auth");
   if (!resp.ok) {
     throw new Error(`Failed to get Microsoft translate token: ${resp.status}`);
   }
@@ -605,7 +750,10 @@ export async function microsoftTranslate(
   const token = await getMicrosoftToken();
   const mappedSource = toMicrosoftLangCode(sourceLang);
   // If source lang is "auto"/"AUTO", empty, or not recognized by Microsoft, omit it for auto-detection
-  const from = (!sourceLang || sourceLang.toLowerCase() === "auto" || !MS_SUPPORTED_LANGS.has(mappedSource)) ? "" : mappedSource;
+  const from =
+    !sourceLang || sourceLang.toLowerCase() === "auto" || !MS_SUPPORTED_LANGS.has(mappedSource)
+      ? ""
+      : mappedSource;
   const to = toMicrosoftLangCode(targetLang);
   const params = new URLSearchParams({
     "api-version": "3.0",
@@ -617,7 +765,7 @@ export async function microsoftTranslate(
 
   const body = texts.map((t) => ({ Text: t }));
 
-  const resp = await fetch(
+  const resp = await getTranslationFetch()(
     `https://api-edge.cognitive.microsofttranslator.com/translate?${params.toString()}`,
     {
       method: "POST",

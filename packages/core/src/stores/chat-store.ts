@@ -15,7 +15,14 @@ import {
  * - Each book has its own active thread; general chat has its own.
  * - All threads are persisted to SQLite via core db module
  */
-import type { Message, MessageV2, ReasoningStep, SemanticContext, Thread, ToolCall } from "../types";
+import type {
+  Message,
+  MessageV2,
+  ReasoningStep,
+  SemanticContext,
+  Thread,
+  ToolCall,
+} from "../types";
 
 export type ChatStreamingStep = "thinking" | "tool_calling" | "responding" | "idle";
 
@@ -217,11 +224,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   addMessage: async (threadId, message) => {
-    try {
-      await dbInsertMessage(message);
-    } catch (err) {
-      console.error("[chat-store] Failed to insert message:", err);
-    }
+    // Persist before publishing the message to memory. A failed write must not
+    // leave the UI claiming that the message exists.
+    await dbInsertMessage(message);
 
     set((state) => ({
       threads: state.threads.map((t) =>

@@ -17,6 +17,7 @@ import type {
   IDatabase,
   IPlatformService,
   IWebSocket,
+  SafeWebFetchResult,
   WebSocketOptions,
 } from "@readany/core/services";
 import * as Clipboard from "expo-clipboard";
@@ -36,6 +37,7 @@ export class ExpoPlatformService implements IPlatformService {
   readonly platformType = "mobile" as const;
   readonly isMobile = true;
   readonly isDesktop = false;
+  readonly capabilities = { safeWebFetch: false } as const;
 
   // ---- File system (expo-file-system v55 — File/Directory/Paths API) ----
 
@@ -298,6 +300,10 @@ export class ExpoPlatformService implements IPlatformService {
       effectiveTimeoutMs,
       onDownloadProgress,
     );
+  }
+
+  async safeWebFetch(_url: string): Promise<SafeWebFetchResult> {
+    throw new Error("Safe web fetch is only supported by the desktop Tauri runtime");
   }
 
   async downloadFile(url: string, filePath: string, options?: FileTransferOptions): Promise<void> {

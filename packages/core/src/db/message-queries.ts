@@ -11,6 +11,7 @@ export async function getMessages(threadId: string): Promise<Message[]> {
     citations: string | null;
     tool_calls: string | null;
     reasoning: string | null;
+    parts: string | null;
     parts_order: string | null;
     created_at: number;
   }>("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC", [threadId]);
@@ -22,6 +23,7 @@ export async function getMessages(threadId: string): Promise<Message[]> {
     citations: parseJSON(r.citations, undefined),
     toolCalls: parseJSON(r.tool_calls, undefined),
     reasoning: parseJSON(r.reasoning, undefined),
+    parts: parseJSON(r.parts, undefined),
     partsOrder: parseJSON(r.parts_order, undefined),
     createdAt: r.created_at,
   }));
@@ -32,7 +34,7 @@ export async function insertMessage(message: Message): Promise<void> {
   const deviceId = await getDeviceId();
   const syncVersion = await nextSyncVersion(database, "messages");
   await database.execute(
-    "INSERT INTO messages (id, thread_id, role, content, citations, tool_calls, reasoning, parts_order, created_at, sync_version, last_modified_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO messages (id, thread_id, role, content, citations, tool_calls, reasoning, parts, parts_order, created_at, sync_version, last_modified_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [
       message.id,
       message.threadId,
@@ -41,6 +43,7 @@ export async function insertMessage(message: Message): Promise<void> {
       message.citations ? JSON.stringify(message.citations) : null,
       message.toolCalls ? JSON.stringify(message.toolCalls) : null,
       message.reasoning ? JSON.stringify(message.reasoning) : null,
+      message.parts ? JSON.stringify(message.parts) : null,
       (message as any).partsOrder ? JSON.stringify((message as any).partsOrder) : null,
       message.createdAt,
       syncVersion,

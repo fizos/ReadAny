@@ -33,6 +33,8 @@
     "translation": "译文",
     "providerMicrosoft": "微软翻译（免费）",
     "providerAI": "AI 翻译",
-    "providerDeepL": "DeepL"
+    "providerDeepL": "DeepL",
+    "movePopover": "移动翻译窗口",
+    "resizePopover": "调整翻译窗口大小"
   }
 }
