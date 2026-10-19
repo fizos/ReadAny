@@ -348,6 +348,8 @@ def build_payload(uv: Path, runtime: Path, payload: Path, engine: Path, temporar
         "const.CACHE_FOLDER = target\n"
         "const.TIKTOKEN_CACHE_FOLDER = target / 'tiktoken'\n"
         "const.TIKTOKEN_CACHE_FOLDER.mkdir(parents=True, exist_ok=True)\n"
+        # BabelDOC's const import overwrites this environment variable.
+        "os.environ['TIKTOKEN_CACHE_DIR'] = str(const.TIKTOKEN_CACHE_FOLDER)\n"
         "from babeldoc.assets import assets\n"
         "assets.warmup()\n"
     )
