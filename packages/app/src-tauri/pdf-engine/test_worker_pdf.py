@@ -391,8 +391,6 @@ class PdfBoundaryTests(unittest.TestCase):
         """Render a rotated 89th-page slide with 33 deterministic translations."""
         font_dir = self._font_dir()
         self.assertTrue((font_dir / 'GoNotoKurrent-Regular.ttf').is_file())
-        consolas = Path('C:/Windows/Fonts/consola.ttf')
-        self.assertTrue(consolas.is_file(), 'Windows Consolas font is required for this slide fixture')
         with tempfile.TemporaryDirectory(prefix='ReadAny slide 中文 ') as directory:
             root = Path(directory)
             source = root / 'source-89.pdf'
@@ -411,10 +409,10 @@ class PdfBoundaryTests(unittest.TestCase):
                 slide.insert_image(pymupdf.Rect(620, 90, 680, 150), pixmap=image)
                 for index in range(33):
                     slide.insert_text((45, 105 + index * 8), f'Prose line {index:02d}',
-                                      fontfile=str(consolas), fontname='Consolas', fontsize=8,
+                                      fontname='cour', fontsize=6,
                                       color=(0.05, 0.05, 0.1))
                 slide.insert_text((45, 390), 'const keep = "KEEP";',
-                                  fontfile=str(consolas), fontname='Consolas', fontsize=9,
+                                  fontname='cour', fontsize=7,
                                   color=(0.05, 0.05, 0.1))
                 with pymupdf.open() as book:
                     for _ in range(88):

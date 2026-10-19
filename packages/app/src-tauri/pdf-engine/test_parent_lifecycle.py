@@ -15,13 +15,16 @@ class ParentLifecycleTests(unittest.TestCase):
     def test_parent_death_stops_blocked_worker_and_grandchild(self):
         worker = str(Path(__file__).with_name('worker.py').resolve())
         child_code = (
-            'import importlib.util, subprocess, sys\n'
+            'import importlib.util, subprocess, sys, time\n'
             's=importlib.util.spec_from_file_location("worker",sys.argv[1])\n'
             'w=importlib.util.module_from_spec(s);s.loader.exec_module(w)\n'
             'w.watch_native_parent()\n'
             'p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(60)"])\n'
             'print(p.pid,flush=True)\n'
-            'sys.stdin.buffer.readline()\n'
+            # Do not let inherited stdin EOF end the worker before its watchdog
+            # can observe the parent's death. Real setup/translation blocks in
+            # subprocess/network/native work after it has already read stdin.
+            'time.sleep(60)\n'
         )
         supervisor_code = (
             'import json,os,subprocess,sys,time\n'
