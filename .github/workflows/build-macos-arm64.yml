@@ -64,16 +64,7 @@ jobs:
           python3 -B scripts/test-pdf-macos-build.py
           python3 -B scripts/prepare-pdf-macos.py --sign-runtime
 
-      - name: Fetch exact PDF notices and copyleft sources
-        run: |
-          python3 scripts/prepare-pdf-notices.py
-          python3 scripts/pdf-asset-notices.py
-          python3 scripts/package-pdf-sources.py --version v9
-
-      - name: Finalize post-signature payload manifest
-        run: python3 scripts/prepare-pdf-macos.py --manifest-only
-
-      - name: Run native PDF worker unit tests from locked arm64 wheels
+      - name: Prepare isolated locked PDF verification environment
         shell: bash
         run: |
           set -euo pipefail
@@ -86,7 +77,20 @@ jobs:
           "$runtime/uv" pip sync --offline --no-index --find-links "$offline/wheels" \
             --python "$test_root/env/bin/python" --require-hashes --only-binary :all: \
             "$engine/requirements.macos-arm64.lock"
-          "$test_root/env/bin/python" -B -m unittest discover -s "$engine" -p 'test_*.py' -v
+          printf 'PDF_QA_PYTHON=%s\n' "$test_root/env/bin/python" >> "$GITHUB_ENV"
+
+      - name: Fetch exact PDF notices and copyleft sources
+        run: |
+          python3 -B scripts/prepare-pdf-notices.py
+          "$PDF_QA_PYTHON" -B scripts/pdf-asset-notices.py
+          python3 -B scripts/package-pdf-sources.py --version v9
+
+      - name: Finalize post-signature payload manifest
+        run: python3 -B scripts/prepare-pdf-macos.py --manifest-only
+
+      - name: Run native PDF worker unit tests from locked arm64 wheels
+        run: |
+          "$PDF_QA_PYTHON" -B -m unittest discover -s packages/app/src-tauri/pdf-engine -p 'test_*.py' -v
 
       - name: Verify reader regressions
         run: pnpm --filter app exec vitest run --config vitest.reader.config.ts
