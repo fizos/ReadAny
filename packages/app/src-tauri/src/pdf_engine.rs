@@ -172,7 +172,8 @@ struct EnginePaths {
 
 impl EnginePaths {
     fn from_app(app_local_data_dir: PathBuf, resource_dir: PathBuf) -> Self {
-        let engine_dir = app_local_data_dir.join("pdf-engine").join("v1");
+        let engine_namespace = mac_engine_namespace(&resource_dir);
+        let engine_dir = app_local_data_dir.join("pdf-engine").join(engine_namespace);
         Self {
             jobs_dir: engine_dir.join("jobs"),
             assets_dir: engine_dir.join("assets"),
@@ -188,10 +189,61 @@ impl EnginePaths {
     }
 
     fn env_python(&self) -> PathBuf {
-        self.engine_dir
-            .join("env")
-            .join("Scripts")
-            .join("python.exe")
+        #[cfg(target_os = "macos")]
+        {
+            return self.engine_dir.join("env").join("bin").join("python");
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.engine_dir
+                .join("env")
+                .join("Scripts")
+                .join("python.exe")
+        }
+    }
+
+    fn runtime_python(&self) -> PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            self.runtime_dir.join("bin").join("python3")
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.runtime_dir.join("python.exe")
+        }
+    }
+
+    fn requirements_lock(&self) -> PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            self.resource_dir.join("requirements.macos-arm64.lock")
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.resource_dir.join("requirements.lock")
+        }
+    }
+}
+
+fn mac_engine_namespace(resource_dir: &Path) -> String {
+    #[cfg(target_os = "macos")]
+    {
+        let manifest = resource_dir.join("pdf-offline").join("manifest.json");
+        let manifest_hash =
+            sha256_file(&manifest).unwrap_or_else(|| "missing-manifest".to_string());
+        // A packaged runtime is private to the app bundle.  Include its
+        // resolved location in the environment namespace so moving the app
+        // bundle cannot accidentally reuse an environment with stale
+        // extension binaries or a stale dyld identity.
+        let runtime = resource_dir.join("pdf-runtime");
+        let runtime_identity = fs::canonicalize(&runtime).unwrap_or(runtime);
+        let runtime_hash = sha256_bytes(path_to_json_string(&runtime_identity).as_bytes());
+        return format!("v1-macos-arm64-{manifest_hash}-{runtime_hash}");
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = resource_dir;
+        "v1".to_string()
     }
 }
 
@@ -326,6 +378,35 @@ impl PdfEngineState {
         create_engine_dirs(&paths)?;
         let _ = self.inner.paths.set(paths);
         Ok(())
+    }
+
+    /// Cancel active native workers and give their process-group guards a
+    /// bounded opportunity to terminate and reap before Tauri tears down the
+    /// application state.  The Drop implementation remains a final safety
+    /// net for paths that do not receive a RunEvent::Exit callback.
+    pub fn shutdown(&self) {
+        let jobs = self
+            .inner
+            .jobs
+            .lock()
+            .map(|jobs| jobs.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for job in &jobs {
+            job.request_cancel();
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            let running = jobs.iter().any(|job| {
+                job.status
+                    .lock()
+                    .map(|status| status.status == "running")
+                    .unwrap_or(false)
+            });
+            if !running {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 
@@ -585,6 +666,10 @@ pub fn pdf_engine_save_export(
     let result_path = completed_job_result_path(&job_id, &state)?;
     let export_root = paths.cache_dir.join("exports");
     let safe_result = validate_pdf_cache_file(&export_root, &result_path, MAX_EXPORT_BYTES)?;
+    #[cfg(target_os = "macos")]
+    {
+        return save_export_macos(&safe_result, &source, &destination, overwrite_approved);
+    }
     let final_path = PathBuf::from(&destination.destination_path);
     let parent = final_path
         .parent()
@@ -685,7 +770,7 @@ fn ready_marker_is_valid(paths: &EnginePaths) -> bool {
     {
         return false;
     }
-    let expected_lock = match sha256_file(&paths.resource_dir.join("requirements.lock")) {
+    let expected_lock = match sha256_file(&paths.requirements_lock()) {
         Some(hash) => hash,
         None => return false,
     };
@@ -696,10 +781,24 @@ fn ready_marker_is_valid(paths: &EnginePaths) -> bool {
         Some(value) => value,
         None => return false,
     };
-    marker_value
-        .get("version")
-        .and_then(serde_json::Value::as_str)
-        == Some(ENGINE_VERSION)
+    let platform_valid = {
+        #[cfg(target_os = "macos")]
+        {
+            marker_value
+                .get("platform")
+                .and_then(serde_json::Value::as_str)
+                == Some("macos-arm64")
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            true
+        }
+    };
+    platform_valid
+        && marker_value
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            == Some(ENGINE_VERSION)
         && marker_value.get("lock").and_then(serde_json::Value::as_str)
             == Some(expected_lock.as_str())
 }
@@ -908,7 +1007,7 @@ struct WorkerMessage {
     message: Option<String>,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn run_job(
     job: Arc<JobState>,
     request: PdfEngineRequest,
@@ -985,8 +1084,8 @@ fn run_job(
     // suspended child to its Job Object.  Re-check before sending stdin so a
     // pre-start cancellation remains a tombstone and never reaches Python.
     if job.cancelled.load(Ordering::Acquire) {
-        process.job.terminate();
-        let _ = process.child.wait();
+        process.terminate();
+        let _ = process.wait();
         job.finish("cancelled", "cancelled", None, None, None);
         finish_job(&weak_inner, &job);
         remove_job_dir(&job.job_dir);
@@ -995,8 +1094,8 @@ fn run_job(
 
     if let Some(mut stdin) = process.child.stdin.take() {
         if stdin.write_all(&input).is_err() || stdin.write_all(b"\n").is_err() {
-            process.job.terminate();
-            let _ = process.child.wait();
+            process.terminate();
+            let _ = process.wait();
             job.finish(
                 "error",
                 "error",
@@ -1009,8 +1108,8 @@ fn run_job(
             return;
         }
     } else {
-        process.job.terminate();
-        let _ = process.child.wait();
+        process.terminate();
+        let _ = process.wait();
         job.finish(
             "error",
             "error",
@@ -1046,10 +1145,10 @@ fn run_job(
     loop {
         if job.cancelled.load(Ordering::Acquire) {
             cancelled = true;
-            process.job.terminate();
+            process.terminate();
         } else if started.elapsed() >= deadline {
             timed_out = true;
-            process.job.terminate();
+            process.terminate();
         }
 
         match event_rx.recv_timeout(Duration::from_millis(100)) {
@@ -1057,17 +1156,17 @@ fn run_job(
             Ok(WorkerEvent::Complete { path, cached }) => completion = Some((path, cached)),
             Ok(WorkerEvent::Error(code)) => {
                 worker_error = Some(safe_worker_error(&code));
-                process.job.terminate();
+                process.terminate();
             }
             Ok(WorkerEvent::ProtocolError) => {
                 protocol_error = true;
-                process.job.terminate();
+                process.terminate();
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
 
-        if let Ok(status) = process.child.try_wait() {
+        if let Ok(status) = process.try_wait() {
             if status.is_some() {
                 exit_status = status;
                 while let Ok(event) = event_rx.try_recv() {
@@ -1084,14 +1183,14 @@ fn run_job(
             }
         } else {
             protocol_error = true;
-            process.job.terminate();
+            process.terminate();
         }
     }
 
     if exit_status.is_none() {
-        exit_status = process.child.wait().ok();
+        exit_status = process.wait().ok();
     }
-    process.job.terminate();
+    process.terminate();
     if let Some(thread) = stdout_thread {
         let _ = thread.join();
     }
@@ -1188,7 +1287,7 @@ fn run_job(
     let _ = control_rx;
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn run_job(
     job: Arc<JobState>,
     _request: PdfEngineRequest,
@@ -1201,7 +1300,7 @@ fn run_job(
         "error"
     };
     let error = (status == "error")
-        .then_some("pdf engine is only supported by the Windows installer".to_string());
+        .then_some("pdf engine is only supported by the Windows or macOS installer".to_string());
     job.finish(status, status, error, None, None);
     finish_job(&weak_inner, &job);
     remove_job_dir(&job.job_dir);
@@ -1284,6 +1383,8 @@ fn validate_export_destination(
     let parent = destination
         .parent()
         .ok_or_else(|| "export destination is invalid".to_string())?;
+    #[cfg(target_os = "macos")]
+    reject_macos_symlink_ancestors(parent)?;
     let parent_metadata = fs::symlink_metadata(parent)
         .map_err(|_| "export destination directory is unavailable".to_string())?;
     if !parent_metadata.is_dir() {
@@ -1320,14 +1421,266 @@ fn validate_export_destination(
 }
 
 fn path_eq_case_insensitive(left: &Path, right: &Path) -> bool {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         path_to_json_string(left).eq_ignore_ascii_case(&path_to_json_string(right))
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         left == right
     }
+}
+
+#[cfg(target_os = "macos")]
+fn reject_macos_symlink_ancestors(path: &Path) -> Result<(), String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| "export destination directory is unavailable".to_string())?
+            .join(path)
+    };
+    let mut current = PathBuf::new();
+    for component in absolute.components() {
+        current.push(component);
+        let metadata = fs::symlink_metadata(&current)
+            .map_err(|_| "export destination directory is unavailable".to_string())?;
+        if metadata.file_type().is_symlink() {
+            return Err("export destination cannot use symlink directories".to_string());
+        }
+        if !metadata.is_dir() {
+            return Err("export destination directory is unavailable".to_string());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn renameatx_np(
+        from_dir_fd: libc::c_int,
+        from: *const libc::c_char,
+        to_dir_fd: libc::c_int,
+        to: *const libc::c_char,
+        flags: libc::c_uint,
+    ) -> libc::c_int;
+}
+
+#[cfg(target_os = "macos")]
+fn macos_name(name: &std::ffi::OsStr) -> Result<std::ffi::CString, String> {
+    use std::os::unix::ffi::OsStrExt;
+    std::ffi::CString::new(name.as_bytes())
+        .map_err(|_| "export destination contains an invalid NUL byte".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn open_macos_directory(path: &Path) -> Result<File, String> {
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| "export destination directory is unavailable".to_string())?
+            .join(path)
+    };
+    let mut directory =
+        File::open("/").map_err(|_| "export destination directory is unavailable".to_string())?;
+    for component in absolute.components() {
+        let std::path::Component::Normal(component) = component else {
+            continue;
+        };
+        let name = macos_name(component)?;
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if fd < 0 {
+            return Err("export destination directory is unavailable".to_string());
+        }
+        // SAFETY: openat returned a new owned directory descriptor.  The
+        // previous component remains open until this assignment, so every
+        // lookup is relative to a stable, already-validated directory fd.
+        directory = unsafe { File::from_raw_fd(fd) };
+    }
+    Ok(directory)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_unlinkat(dir_fd: libc::c_int, name: &std::ffi::CString) {
+    unsafe {
+        let _ = libc::unlinkat(dir_fd, name.as_ptr(), 0);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_statat(
+    dir_fd: libc::c_int,
+    name: &std::ffi::CString,
+) -> Result<Option<libc::stat>, String> {
+    let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+    let result =
+        unsafe { libc::fstatat(dir_fd, name.as_ptr(), &mut stat, libc::AT_SYMLINK_NOFOLLOW) };
+    if result == 0 {
+        return Ok(Some(stat));
+    }
+    if io::Error::last_os_error().kind() == io::ErrorKind::NotFound {
+        Ok(None)
+    } else {
+        Err("unable to inspect export destination".to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_regular_stat(stat: &libc::stat) -> bool {
+    (stat.st_mode & libc::S_IFMT) == libc::S_IFREG
+}
+
+#[cfg(target_os = "macos")]
+fn macos_copy_and_hash(input: &Path, output: &mut File) -> Result<(u64, String), String> {
+    use sha2::{Digest, Sha256};
+    let mut input = File::open(input).map_err(|_| "unable to read exported PDF".to_string())?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 32 * 1024];
+    let mut bytes = 0_u64;
+    loop {
+        let read = input
+            .read(&mut buffer)
+            .map_err(|_| "unable to read exported PDF".to_string())?;
+        if read == 0 {
+            break;
+        }
+        bytes = bytes
+            .checked_add(read as u64)
+            .ok_or_else(|| "invalid exported PDF size".to_string())?;
+        if bytes > MAX_EXPORT_BYTES {
+            return Err("invalid exported PDF size".to_string());
+        }
+        output
+            .write_all(&buffer[..read])
+            .map_err(|_| "unable to write export file".to_string())?;
+        digest.update(&buffer[..read]);
+    }
+    if bytes == 0 {
+        return Err("invalid exported PDF size".to_string());
+    }
+    Ok((bytes, format!("{:x}", digest.finalize())))
+}
+
+#[cfg(target_os = "macos")]
+fn save_export_macos(
+    safe_result: &Path,
+    source: &Path,
+    destination: &PdfExportDestination,
+    overwrite_approved: bool,
+) -> Result<PdfExportSaveResult, String> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+
+    let final_path = PathBuf::from(&destination.destination_path);
+    let parent = final_path
+        .parent()
+        .ok_or_else(|| "export destination is invalid".to_string())?;
+    // The destination was canonicalized by validate_export_destination.  Do
+    // the check again here immediately before opening the directory fd so a
+    // symlink replacement cannot turn the operation into a path traversal.
+    reject_macos_symlink_ancestors(parent)?;
+    let directory = open_macos_directory(parent)?;
+    let dir_fd = directory.as_raw_fd();
+    let destination_name = macos_name(
+        final_path
+            .file_name()
+            .ok_or_else(|| "export destination is invalid".to_string())?,
+    )?;
+    let temporary_text = format!(
+        ".{}.{}.partial.pdf",
+        destination_name.to_string_lossy(),
+        Uuid::new_v4()
+    );
+    let temporary_name = std::ffi::CString::new(temporary_text)
+        .map_err(|_| "export destination is invalid".to_string())?;
+    let result = (|| -> Result<(u64, String), String> {
+        let fd = unsafe {
+            libc::openat(
+                dir_fd,
+                temporary_name.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o600,
+            )
+        };
+        if fd < 0 {
+            return Err("unable to create export file".to_string());
+        }
+        // SAFETY: openat returned the unique owned descriptor above.
+        let mut output = unsafe { File::from_raw_fd(fd) };
+        let copied = macos_copy_and_hash(safe_result, &mut output)?;
+        output
+            .sync_all()
+            .map_err(|_| "unable to flush export file".to_string())?;
+        drop(output);
+
+        let source_metadata =
+            fs::metadata(source).map_err(|_| "source PDF is unavailable".to_string())?;
+        let existing = macos_statat(dir_fd, &destination_name)?;
+        if let Some(stat) = existing {
+            if !macos_regular_stat(&stat) {
+                return Err("export destination is not a regular file".to_string());
+            }
+            if stat.st_dev as u64 == source_metadata.dev() && stat.st_ino == source_metadata.ino() {
+                return Err("export destination cannot overwrite the source PDF".to_string());
+            }
+            if !overwrite_approved {
+                return Err("export destination already exists".to_string());
+            }
+        }
+
+        let rename_result = if overwrite_approved {
+            unsafe {
+                libc::renameat(
+                    dir_fd,
+                    temporary_name.as_ptr(),
+                    dir_fd,
+                    destination_name.as_ptr(),
+                )
+            }
+        } else {
+            // RENAME_EXCL is the macOS no-replace variant.  The destination
+            // is still checked above for a useful error and this operation is
+            // the race-safe final guard.
+            const RENAME_EXCL: libc::c_uint = 0x0000_0004;
+            unsafe {
+                renameatx_np(
+                    dir_fd,
+                    temporary_name.as_ptr(),
+                    dir_fd,
+                    destination_name.as_ptr(),
+                    RENAME_EXCL,
+                )
+            }
+        };
+        if rename_result != 0 {
+            return Err("unable to atomically publish exported PDF".to_string());
+        }
+        unsafe {
+            if libc::fsync(dir_fd) != 0 {
+                return Err("unable to flush export directory".to_string());
+            }
+        }
+        Ok(copied)
+    })();
+    if result.is_err() {
+        macos_unlinkat(dir_fd, &temporary_name);
+    }
+    let (bytes, sha256) = result?;
+    Ok(PdfExportSaveResult {
+        destination_path: path_to_json_string(&final_path),
+        bytes,
+        sha256,
+        warnings: Vec::new(),
+    })
 }
 
 #[cfg(windows)]
@@ -1473,8 +1826,55 @@ struct RunningProcess {
     job: WindowsJob,
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+struct RunningProcess {
+    child: std::process::Child,
+    job: MacProcessGroup,
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 struct RunningProcess;
+
+#[cfg(windows)]
+impl RunningProcess {
+    fn terminate(&mut self) {
+        self.job.terminate();
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        self.child.try_wait()
+    }
+
+    fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+        self.child.wait()
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl RunningProcess {
+    fn terminate(&mut self) {
+        self.job.terminate();
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        if self.job.leader_exited()? {
+            self.job.terminate();
+            return self.job.wait(&mut self.child).map(Some);
+        }
+        Ok(None)
+    }
+
+    fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+        self.job.wait(&mut self.child)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for RunningProcess {
+    fn drop(&mut self) {
+        let _ = self.wait();
+    }
+}
 
 #[cfg(windows)]
 fn spawn_worker(request: &PdfEngineRequest, paths: &EnginePaths) -> Result<RunningProcess, String> {
@@ -1483,7 +1883,7 @@ fn spawn_worker(request: &PdfEngineRequest, paths: &EnginePaths) -> Result<Runni
     use std::process::{Command, Stdio};
 
     let executable = if request.action == "setup" {
-        paths.runtime_dir.join("python.exe")
+        paths.runtime_python()
     } else {
         paths.env_python()
     };
@@ -1495,6 +1895,7 @@ fn spawn_worker(request: &PdfEngineRequest, paths: &EnginePaths) -> Result<Runni
     let mut command = Command::new(executable);
     command
         .arg("-I")
+        .arg("-B")
         .arg(worker)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1521,12 +1922,56 @@ fn spawn_worker(request: &PdfEngineRequest, paths: &EnginePaths) -> Result<Runni
     Ok(RunningProcess { child, job })
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn spawn_worker(request: &PdfEngineRequest, paths: &EnginePaths) -> Result<RunningProcess, String> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    let executable = if request.action == "setup" {
+        paths.runtime_python()
+    } else {
+        paths.env_python()
+    };
+    let worker = paths.resource_dir.join("worker.py");
+    if !executable.is_file() || !worker.is_file() {
+        return Err("pdf engine resources are unavailable".to_string());
+    }
+    let mut command = Command::new(executable);
+    command
+        .arg("-I")
+        .arg("-B")
+        .arg(worker)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // A dedicated process group makes cancellation safe even when the
+        // worker has spawned uv, model helpers, or other descendants.
+        .process_group(0)
+        // The Python watcher is only inherited by this primary worker.  It
+        // removes the variable before it launches any descendants.
+        .env("READANY_PDF_PARENT_PID", std::process::id().to_string());
+    let child = command
+        .spawn()
+        .map_err(|_| "unable to start pdf engine".to_string())?;
+    let pid = child.id() as libc::pid_t;
+    let job = match MacProcessGroup::new(pid) {
+        Ok(job) => job,
+        Err(()) => {
+            let mut child = child;
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("unable to isolate pdf engine".to_string());
+        }
+    };
+    Ok(RunningProcess { child, job })
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn spawn_worker(
     _request: &PdfEngineRequest,
     _paths: &EnginePaths,
 ) -> Result<RunningProcess, String> {
-    Err("pdf engine is only supported by the Windows installer".to_string())
+    Err("pdf engine is only supported by the Windows or macOS installer".to_string())
 }
 
 #[cfg(windows)]
@@ -1595,6 +2040,109 @@ impl Drop for WindowsJob {
 #[link(name = "ntdll")]
 unsafe extern "system" {
     fn NtResumeProcess(process_handle: windows_sys::Win32::Foundation::HANDLE) -> i32;
+}
+
+#[cfg(target_os = "macos")]
+struct MacProcessGroup {
+    pid: libc::pid_t,
+    pgid: libc::pid_t,
+    term_sent: bool,
+    kill_sent: bool,
+    term_at: Option<Instant>,
+}
+
+#[cfg(target_os = "macos")]
+impl MacProcessGroup {
+    const TERM_GRACE: Duration = Duration::from_millis(250);
+
+    fn new(pid: libc::pid_t) -> Result<Self, ()> {
+        if pid <= 1 {
+            return Err(());
+        }
+        let pgid = unsafe { libc::getpgid(pid) };
+        if pgid != pid {
+            return Err(());
+        }
+        Ok(Self {
+            pid,
+            pgid,
+            term_sent: false,
+            kill_sent: false,
+            term_at: None,
+        })
+    }
+
+    fn is_exact_group(&self) -> bool {
+        self.pid == self.pgid && self.pid > 1 && unsafe { libc::getpgid(self.pid) } == self.pgid
+    }
+
+    fn signal_group(&self, signal: libc::c_int) {
+        if self.is_exact_group() {
+            // A negative PID targets the process group.  The exact getpgid
+            // check above prevents a reused PID or an unrelated group from
+            // receiving a cancellation signal.
+            let _ = unsafe { libc::kill(-self.pgid, signal) };
+        }
+    }
+
+    fn terminate(&mut self) {
+        if self.kill_sent {
+            return;
+        }
+        if !self.term_sent {
+            self.signal_group(libc::SIGTERM);
+            self.term_sent = true;
+            self.term_at = Some(Instant::now());
+        } else if self
+            .term_at
+            .is_some_and(|sent| sent.elapsed() >= Self::TERM_GRACE)
+        {
+            self.signal_group(libc::SIGKILL);
+            self.kill_sent = true;
+        }
+    }
+
+    fn leader_exited(&self) -> io::Result<bool> {
+        let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                self.pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(info.si_pid == self.pid && info.si_code != 0)
+    }
+
+    fn wait(&mut self, child: &mut std::process::Child) -> io::Result<std::process::ExitStatus> {
+        // Escalate without making every 100ms run-loop iteration sleep.  This
+        // is intentionally bounded and also reaps the direct child.
+        let deadline = Instant::now() + Self::TERM_GRACE + Duration::from_millis(100);
+        loop {
+            if self.leader_exited()? {
+                // Keep the leader as a waitable zombie while the exact group
+                // is terminated; reaping first would make getpgid(pid)
+                // indistinguishable from a reused PID.
+                self.terminate();
+                self.signal_group(libc::SIGKILL);
+                self.kill_sent = true;
+                return child.wait();
+            }
+            self.terminate();
+            if self.kill_sent || Instant::now() >= deadline {
+                if !self.kill_sent {
+                    self.signal_group(libc::SIGKILL);
+                    self.kill_sent = true;
+                }
+                return child.wait();
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1845,6 +2393,7 @@ mod tests {
     fn export_destination_rejects_source_and_requires_explicit_overwrite() {
         let root = std::env::temp_dir().join(format!("readany-pdf-export-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).expect("temp dir");
+        let root = fs::canonicalize(root).expect("canonical temp dir");
         let source = root.join("source.pdf");
         fs::write(&source, b"%PDF-1.7\nsource").expect("source");
         let canonical = validate_pdf_input(&path_to_json_string(&source)).expect("valid source");
@@ -1892,5 +2441,155 @@ mod tests {
         assert_eq!(fs::read(&destination).expect("published"), b"%PDF-1.7\nnew");
         assert!(!temporary.exists());
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_export_is_exclusive_atomic_and_protects_source_aliases() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("readany-mac-export-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let source = root.join("source.pdf");
+        let translated = root.join("cached.pdf");
+        fs::write(&source, b"%PDF-1.7\nsource").unwrap();
+        fs::write(&translated, b"%PDF-1.7\ntranslated").unwrap();
+        let output = root.join("translated.pdf");
+        let destination =
+            validate_export_destination(&source, &path_to_json_string(&output), false).unwrap();
+        // A competing file created after validation must not be overwritten.
+        fs::write(&output, b"racing file").unwrap();
+        assert!(save_export_macos(&translated, &source, &destination, false).is_err());
+        assert_eq!(fs::read(&output).unwrap(), b"racing file");
+        fs::remove_file(&output).unwrap();
+        save_export_macos(&translated, &source, &destination, false).unwrap();
+        assert_eq!(fs::read(&output).unwrap(), b"%PDF-1.7\ntranslated");
+        fs::write(&translated, b"%PDF-1.7\nnew translation").unwrap();
+        let approved =
+            validate_export_destination(&source, &path_to_json_string(&output), true).unwrap();
+        save_export_macos(&translated, &source, &approved, true).unwrap();
+        assert_eq!(fs::read(&output).unwrap(), b"%PDF-1.7\nnew translation");
+        let alias = root.join("source-alias.pdf");
+        fs::hard_link(&source, &alias).unwrap();
+        let alias_destination =
+            validate_export_destination(&source, &path_to_json_string(&alias), true).unwrap();
+        assert!(save_export_macos(&translated, &source, &alias_destination, true).is_err());
+        assert_eq!(fs::read(&source).unwrap(), b"%PDF-1.7\nsource");
+        let linked_directory = root.join("linked");
+        symlink(&root, &linked_directory).unwrap();
+        assert!(validate_export_destination(
+            &source,
+            &path_to_json_string(&linked_directory.join("bad.pdf")),
+            false
+        )
+        .is_err());
+        assert!(!fs::read_dir(&root).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("partial.pdf")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_runtime_paths_and_manifest_namespace_are_platform_specific() {
+        let root = std::env::temp_dir().join(format!("readany-mac-paths-{}", Uuid::new_v4()));
+        let resources = root.join("resources");
+        fs::create_dir_all(resources.join("pdf-offline")).unwrap();
+        fs::write(
+            resources.join("pdf-offline/manifest.json"),
+            b"first manifest",
+        )
+        .unwrap();
+        let first = EnginePaths::from_app(root.join("data"), resources.clone());
+        assert!(first.runtime_python().ends_with("pdf-runtime/bin/python3"));
+        assert!(first.env_python().ends_with("env/bin/python"));
+        assert!(first
+            .requirements_lock()
+            .ends_with("requirements.macos-arm64.lock"));
+        fs::write(
+            resources.join("pdf-offline/manifest.json"),
+            b"second manifest",
+        )
+        .unwrap();
+        let second = EnginePaths::from_app(root.join("data"), resources.clone());
+        assert_ne!(first.engine_dir, second.engine_dir);
+        let moved = EnginePaths::from_app(root.join("data"), root.join("moved-resources"));
+        assert_ne!(second.engine_dir, moved.engine_dir);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_group_reaps_descendant_after_leader_exit_without_killing_unrelated_process() {
+        use std::process::{Command, Stdio};
+        let root = std::env::temp_dir().join(format!("readany-mac-group-{}", Uuid::new_v4()));
+        let mut paths = EnginePaths::from_app(root.clone(), root.join("resources"));
+        paths.runtime_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("pdf-runtime");
+        assert!(
+            paths.runtime_python().is_file(),
+            "prepare bundled macOS Python first"
+        );
+        fs::create_dir_all(&paths.resource_dir).unwrap();
+        fs::write(paths.resource_dir.join("worker.py"),
+            "import subprocess,sys\np=subprocess.Popen([sys.executable,'-I','-B','-c','import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)'])\nprint(p.pid,flush=True)\n").unwrap();
+        let mut unrelated = Command::new(paths.runtime_python())
+            .args(["-I", "-B", "-c", "import time;time.sleep(60)"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let request: PdfEngineRequest = serde_json::from_value(
+            serde_json::json!({"jobId":Uuid::new_v4().to_string(),"action":"setup"}),
+        )
+        .unwrap();
+        let mut process = spawn_worker(&request, &paths).unwrap();
+        let stdout = process.child.stdout.take().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            let mut line = String::new();
+            let _ = BufReader::new(stdout).read_line(&mut line);
+            let _ = tx.send(line);
+        });
+        let pid: i32 = rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if process.try_wait().unwrap().is_some() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "worker did not exit");
+            thread::sleep(Duration::from_millis(10));
+        }
+        reader.join().unwrap();
+        assert!(
+            unrelated.try_wait().unwrap().is_none(),
+            "cancelled an unrelated process"
+        );
+        let _ = unrelated.kill();
+        let _ = unrelated.wait();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = Command::new("/bin/ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            let state = String::from_utf8_lossy(&status.stdout);
+            if state.trim().is_empty() || state.trim().starts_with('Z') {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "grandchild survived leader cleanup"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }

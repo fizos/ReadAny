@@ -2,6 +2,15 @@ import type { BookFormat } from "@/lib/reader/document-loader";
 
 export type ReaderTranslationMode = "none" | "epub" | "pdf-high-fidelity";
 
+export function supportsDesktopPdfEngine(
+  isDesktop: boolean,
+  userAgent: string,
+  platform: string,
+): boolean {
+  // iPadOS can advertise MacIntel; it cannot launch the bundled native engine.
+  return isDesktop && (/Windows|Macintosh|Mac OS X/i.test(userAgent) || /^(Win|Mac)/i.test(platform));
+}
+
 export function getReaderTranslationMode(
   format: BookFormat,
   supportsHighFidelityPdf: boolean,

@@ -76,7 +76,7 @@ class WorkerTests(unittest.TestCase):
             root = Path(directory)
             resources = root / 'pdf-engine'
             resources.mkdir()
-            (resources / 'requirements.lock').write_text('locked')
+            worker.requirements_path(resources).write_text('locked')
             engine = root / 'private'
             request = dict(engineDir=str(engine), runtimeDir=str(root/'runtime'),
                            resourceDir=str(resources), assetsDir=str(engine/'assets'))
@@ -90,7 +90,7 @@ class WorkerTests(unittest.TestCase):
             self.assertIn('--no-python-downloads', calls[0])
             for flag in ('--offline', '--no-index', '--require-hashes', '--find-links'):
                 self.assertIn(flag, calls[1])
-            self.assertEqual(calls[1][calls[1].index('--python')+1], str(engine/'env/Scripts/python.exe'))
+            self.assertEqual(calls[1][calls[1].index('--python')+1], str(worker.python_path(engine/'env', environment=True)))
             self.assertTrue((engine/'ready.json').exists())
 
     def test_offline_manifest_rejects_missing_corrupt_and_traversal(self):
@@ -98,13 +98,14 @@ class WorkerTests(unittest.TestCase):
             root = Path(directory)
             resources = root / 'resources'
             resources.mkdir()
-            (resources / 'requirements.lock').write_text('locked')
+            worker.requirements_path(resources).write_text('locked')
             with self.assertRaises(worker.EngineError):
                 worker.verify_offline_payload(root, resources)
             (root / 'wheels').mkdir()
             wheel = root / 'wheels' / 'demo.whl'
             wheel.write_bytes(b'verified')
-            manifest = dict(version=worker.VERSION, lock=worker.file_hash(resources / 'requirements.lock'),
+            manifest = dict(version=worker.VERSION, lock=worker.file_hash(worker.requirements_path(resources)),
+                            platform=worker.payload_platform(),
                             files={'wheels/demo.whl': worker.file_hash(wheel)})
             (root / 'manifest.json').write_text(json.dumps(manifest))
             self.assertEqual(worker.verify_offline_payload(root, resources), manifest)
@@ -115,6 +116,87 @@ class WorkerTests(unittest.TestCase):
             (root / 'manifest.json').write_text(json.dumps(manifest))
             with self.assertRaises(worker.EngineError):
                 worker.verify_offline_payload(root, resources)
+
+    def test_macos_runtime_paths_and_architecture_are_explicit(self):
+        with patch.object(worker.sys, 'platform', 'darwin'), patch.object(worker.platform, 'machine', return_value='arm64'):
+            root = Path('/app/resources')
+            self.assertEqual(worker.python_path(root), root/'bin/python3')
+            self.assertEqual(worker.python_path(root, environment=True), root/'bin/python')
+            self.assertEqual(worker.requirements_path(root).name, 'requirements.macos-arm64.lock')
+            self.assertEqual(worker.payload_platform(), 'macos-arm64')
+            with patch.object(worker.platform, 'machine', return_value='x86_64'), self.assertRaises(worker.EngineError):
+                worker.payload_platform()
+
+    def test_macos_setup_uses_only_the_macos_lock_and_private_environment(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(worker.sys, 'platform', 'darwin'), \
+             patch.object(worker.platform, 'machine', return_value='arm64'):
+            root = Path(directory)
+            resources = root/'pdf-engine'
+            resources.mkdir()
+            worker.requirements_path(resources).write_text('mac-lock')
+            request = dict(engineDir=str(root/'private'), runtimeDir=str(root/'runtime'),
+                           resourceDir=str(resources), assetsDir=str(root/'private/assets'))
+            with patch.object(worker, 'verify_offline_payload', return_value={'files': {}}), \
+                 patch.object(worker.subprocess, 'run', return_value=type('Result', (), {'returncode': 0})()) as run, \
+                 patch.object(worker, 'emit'):
+                worker.run_setup(request)
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertEqual(commands[0][0], str(root/'runtime/uv'))
+            self.assertIn(str(root/'runtime/bin/python3'), commands[0])
+            self.assertIn(str(root/'private/env/bin/python'), commands[1])
+            self.assertEqual(commands[1][-1], str(resources/'requirements.macos-arm64.lock'))
+            self.assertFalse(any('python.exe' in argument for command in commands for argument in command))
+            marker = json.loads((root/'private/ready.json').read_text())
+            self.assertEqual(marker['platform'], 'macos-arm64')
+
+    def test_macos_refuses_windows_or_unlabelled_wheelhouse(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(worker.sys, 'platform', 'darwin'), \
+             patch.object(worker.platform, 'machine', return_value='arm64'):
+            root = Path(directory)
+            resources = root/'pdf-engine'
+            resources.mkdir()
+            worker.requirements_path(resources).write_text('mac-lock')
+            (root/'wheels').mkdir()
+            wheel = root/'wheels/demo.whl'
+            wheel.write_bytes(b'verified')
+            manifest = dict(version=worker.VERSION, lock=worker.file_hash(worker.requirements_path(resources)),
+                            files={'wheels/demo.whl': worker.file_hash(wheel)})
+            for name in (None, 'windows-x86_64', 'macos-arm64'):
+                manifest['platform'] = name
+                (root/'manifest.json').write_text(json.dumps(manifest))
+                if name == 'macos-arm64':
+                    self.assertEqual(worker.verify_offline_payload(root, resources)['platform'], name)
+                else:
+                    with self.assertRaises(worker.EngineError):
+                        worker.verify_offline_payload(root, resources)
+
+    def test_parent_watch_rejects_mismatch_without_killing_any_group(self):
+        with patch.object(worker.sys, 'platform', 'darwin'), patch.dict(worker.os.environ, {'READANY_PDF_PARENT_PID': '99'}), \
+             patch.object(worker.os, 'getppid', return_value=100), \
+             patch.object(worker.os, 'killpg', create=True) as kill:
+            with self.assertRaises(worker.EngineError):
+                worker.watch_native_parent()
+            self.assertNotIn('READANY_PDF_PARENT_PID', worker.os.environ)
+            kill.assert_not_called()
+
+    def test_parent_watch_requires_private_process_group(self):
+        with patch.object(worker.sys, 'platform', 'darwin'), patch.dict(worker.os.environ, {'READANY_PDF_PARENT_PID': '99'}), \
+             patch.object(worker.os, 'getppid', return_value=99), patch.object(worker.os, 'getpid', return_value=101), \
+             patch.object(worker.os, 'getpgrp', return_value=42, create=True):
+            with self.assertRaises(worker.EngineError):
+                worker.watch_native_parent()
+
+    def test_parent_watch_kills_only_its_private_group_on_parent_death(self):
+        with patch.object(worker.sys, 'platform', 'darwin'), patch.dict(worker.os.environ, {'READANY_PDF_PARENT_PID': '99'}), \
+             patch.object(worker.os, 'getppid', side_effect=[99, 1]), patch.object(worker.os, 'getpid', return_value=101), \
+             patch.object(worker.os, 'getpgrp', return_value=101, create=True), \
+             patch.object(worker.signal, 'SIGKILL', 9, create=True), \
+             patch.object(worker.os, 'killpg', create=True) as kill, patch.object(worker.time, 'sleep'), \
+             patch.object(worker.threading, 'Thread') as thread:
+            worker.watch_native_parent()
+            self.assertNotIn('READANY_PDF_PARENT_PID', worker.os.environ)
+            thread.call_args.kwargs['target']()
+            kill.assert_called_once_with(101, worker.signal.SIGKILL)
 
     def test_protocol_is_utf8_on_windows_legacy_codepage(self):
         buffer = io.BytesIO()

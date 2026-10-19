@@ -53,7 +53,7 @@ import { SelectionPopover } from "./SelectionPopover";
 import { TOCPanel } from "./TOCPanel";
 import { TTSPage } from "./TTSPage";
 import { TranslationPopover } from "./TranslationPopover";
-import { getReaderTranslationMode } from "./reader-capabilities";
+import { getReaderTranslationMode, supportsDesktopPdfEngine } from "./reader-capabilities";
 import { useEpubTranslation } from "./epub-translation/useEpubTranslation";
 import { EpubTranslationPane } from "./epub-translation/EpubTranslationPane";
 import { BookTranslationProfileDialog } from "./immersive-translation/BookTranslationProfileDialog";
@@ -788,17 +788,17 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
   // Book document state
   const [bookFormat, setBookFormat] = useState<BookFormat>("EPUB");
   const isFixedLayout = isFixedLayoutBook(bookFormat, bookDoc);
-  const isWindowsDesktop = useMemo(() => {
+  const supportsHighFidelityPdf = useMemo(() => {
     try {
       const platform = getPlatformService();
       if (!platform.isDesktop || typeof navigator === "undefined") return false;
-      return /Windows/i.test(navigator.userAgent) || /^Win/i.test(navigator.platform);
+      return supportsDesktopPdfEngine(platform.isDesktop, navigator.userAgent, navigator.platform);
     } catch {
       return false;
     }
   }, []);
   const highFidelityPdf = useHighFidelityPdfTranslation({
-    supported: isWindowsDesktop && bookFormat === "PDF",
+    supported: supportsHighFidelityPdf && bookFormat === "PDF",
     bookId,
     filePath: book?.filePath,
     page: currentSectionIndex,
@@ -808,7 +808,7 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
   });
   const translationMode = getReaderTranslationMode(
     bookFormat,
-    isWindowsDesktop && bookFormat === "PDF",
+    supportsHighFidelityPdf && bookFormat === "PDF",
   );
   const epubTranslation = useEpubTranslation({
     supported: translationMode === "epub",
@@ -3205,7 +3205,7 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
             onHighFidelityPdfCancel={highFidelityPdf.cancel}
             onHighFidelityPdfRetry={highFidelityPdf.retry}
             onHighFidelityPdfExit={highFidelityPdf.exit}
-            isHighFidelityPdfSupported={isWindowsDesktop && bookFormat === "PDF"}
+            isHighFidelityPdfSupported={supportsHighFidelityPdf && bookFormat === "PDF"}
             isEpubTranslationSupported={translationMode === "epub"}
             isChatOpen={showChat}
             isTTSActive={showTTS || ttsPlayState !== "stopped"}

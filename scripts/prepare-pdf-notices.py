@@ -12,6 +12,7 @@ root = Path(__file__).resolve().parent.parent
 licenses = root / 'packages/app/src-tauri/pdf-offline/licenses'
 sources = root / 'fix-build/pdf-engine-v7-sources'
 archives = [
+ ('mupdf-1.25.2-source.tar.gz', 'https://mupdf.com/downloads/archive/mupdf-1.25.2-source.tar.gz', '36ccf6a5e691e188acf8db6e98d08bf05f27bb4ce30432dc15fc76d329a92d4d'),
  ('babeldoc-0.6.2.tar.gz', 'https://files.pythonhosted.org/packages/5e/2b/e0f23e7fde25a7d9b90ff219ca60c220105552ec96f290a5dfaadabe4590/babeldoc-0.6.2.tar.gz', 'b2b2769aa9f8372b35071b46788da531ebb58bc3cf31ab4dbb5deb06e9424026'),
  ('pdf2zh_next-2.9.0.tar.gz', 'https://files.pythonhosted.org/packages/87/5e/d971946ec7ad3e0b0aeada46e323485e7b2fb29ed5285b0d854e285b9d8d/pdf2zh_next-2.9.0.tar.gz', 'cadd8380eb8b3c06427f04e4c4a3a3bafc56a2a6b5e2293f9b5ad07c3c3011dd'),
  ('pymupdf-1.25.2.tar.gz', 'https://files.pythonhosted.org/packages/40/fc/dd8776dc5c2f8cf0e51cf81a5f1de3840996bed7ca03ec768b0733024fb9/pymupdf-1.25.2.tar.gz', '9ea88ff1b3ccb359620f106a6fd5ba6877d959d21d78272052c3496ceede6eec'),

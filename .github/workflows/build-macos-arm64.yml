@@ -9,15 +9,32 @@ on:
 permissions:
   contents: read
 
+env:
+  MACOSX_DEPLOYMENT_TARGET: "14.0"
+  UV_NO_PROGRESS: "1"
+
 jobs:
   build-macos-arm64:
     name: Build macOS arm64
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 180
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Assert native Apple Silicon runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          python3 - <<'PY'
+          import platform
+          assert platform.system() == "Darwin", platform.system()
+          assert platform.machine().lower() in {"arm64", "aarch64"}, platform.machine()
+          print("native macOS arm64; deployment target 14.0")
+          PY
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -42,10 +59,44 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build portable offline PDF runtime and wheelhouse
+        run: |
+          python3 -B scripts/test-pdf-macos-build.py
+          python3 -B scripts/prepare-pdf-macos.py --sign-runtime
+
+      - name: Fetch exact PDF notices and copyleft sources
+        run: |
+          python3 scripts/prepare-pdf-notices.py
+          python3 scripts/pdf-asset-notices.py
+          python3 scripts/package-pdf-sources.py --version v9
+
+      - name: Finalize post-signature payload manifest
+        run: python3 scripts/prepare-pdf-macos.py --manifest-only
+
+      - name: Run native PDF worker unit tests from locked arm64 wheels
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE"
+          runtime="$root/packages/app/src-tauri/pdf-runtime"
+          engine="$root/packages/app/src-tauri/pdf-engine"
+          offline="$root/packages/app/src-tauri/pdf-offline"
+          test_root="$(mktemp -d "$RUNNER_TEMP/readany-pdf-tests.XXXXXX")"
+          "$runtime/uv" venv --offline --no-python-downloads --python "$runtime/bin/python3" "$test_root/env"
+          "$runtime/uv" pip sync --offline --no-index --find-links "$offline/wheels" \
+            --python "$test_root/env/bin/python" --require-hashes --only-binary :all: \
+            "$engine/requirements.macos-arm64.lock"
+          "$test_root/env/bin/python" -B -m unittest discover -s "$engine" -p 'test_*.py' -v
+
       - name: Verify reader regressions
         run: pnpm --filter app exec vitest run --config vitest.reader.config.ts
 
-      - name: Build Apple Silicon DMG
+      - name: Run native PDF engine Rust tests
+        run: |
+          pnpm --filter @readany/cli build
+          cargo test --manifest-path packages/app/src-tauri/Cargo.toml pdf_engine::tests
+
+      - name: Build Apple Silicon app and DMG
         env:
           APPLE_SIGNING_IDENTITY: "-"
         run: >-
@@ -55,27 +106,43 @@ jobs:
           --ci
           --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
-      - name: Verify and package Apple Silicon app
+      - name: Verify relocated app and offline PDF smoke
         shell: bash
         run: |
           set -euo pipefail
           bundle="$GITHUB_WORKSPACE/packages/app/src-tauri/target/aarch64-apple-darwin/release/bundle"
           app="$bundle/macos/ReadAny.app"
+          python3 scripts/verify-pdf-macos.py "$app" --source-root "$GITHUB_WORKSPACE" --smoke
+
+      - name: Package and hash Apple Silicon artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE"
+          bundle="$root/packages/app/src-tauri/target/aarch64-apple-darwin/release/bundle"
+          app="$bundle/macos/ReadAny.app"
           binary="$app/Contents/MacOS/app"
           test -f "$binary"
-          test "$(lipo -archs "$binary")" = "arm64"
+          test "$(lipo -archs "$binary")" = arm64
           codesign --verify --deep --strict --verbose=2 "$app"
+          hdiutil verify "$bundle"/dmg/*.dmg
           mkdir -p artifacts
-          ditto -c -k --sequesterRsrc --keepParent "$app" artifacts/ReadAny_1.3.6_v21_macos_arm64.app.zip
-          for dmg in "$bundle"/dmg/*.dmg; do
-            hdiutil verify "$dmg"
-            cp "$dmg" artifacts/
+          ditto -c -k --sequesterRsrc --keepParent "$app" artifacts/ReadAny_1.3.6_macos_arm64_pdf_full.app.zip
+          cp "$bundle"/dmg/*.dmg artifacts/
+          cp "$root/packages/app/src-tauri/pdf-offline/manifest.json" artifacts/pdf-payload-manifest.json
+          cp "$root/fix-build/pdf-engine-v9-sources/ReadAny-v9-build-sources.zip" artifacts/
+          for source_archive in "$root"/fix-build/pdf-engine-v7-sources/*.tar.gz; do
+            cp "$source_archive" artifacts/
           done
           {
-            printf 'source_commit=%s\narchitecture=arm64\nsigning=ad-hoc\nnotarized=false\n' "$GITHUB_SHA"
-            printf 'high_fidelity_pdf=windows-only\n'
+            printf 'source_commit=%s\narchitecture=arm64\nminimum_macos=14.0\n' "$GITHUB_SHA"
+            printf 'signing=ad-hoc\nnotarized=false\npdf_support=experimental-mac-cpu\n'
+            printf 'pdf_offline_setup=verified\npdf_roundtrip=loopback-fake-provider-only\n'
+            printf 'native_m1_ui_validation=not_performed\n'
+            printf 'payload_lock_sha256=%s\n' "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lock"])' artifacts/pdf-payload-manifest.json)"
+            printf 'payload_manifest_sha256='; shasum -a 256 artifacts/pdf-payload-manifest.json | cut -d' ' -f1; printf '\n'
             shasum -a 256 "$binary"
-            shasum -a 256 artifacts/*.dmg artifacts/*.app.zip
+            shasum -a 256 artifacts/*.dmg artifacts/*.app.zip artifacts/*.tar.gz artifacts/pdf-payload-manifest.json artifacts/ReadAny-v9-build-sources.zip
           } > artifacts/build-manifest.txt
 
       - name: Upload macOS arm64 artifacts

@@ -8,8 +8,10 @@ Sources: https://github.com/python/cpython/tree/v3.12.11,
 https://github.com/astral-sh/python-build-standalone,
 https://github.com/astral-sh/uv/tree/0.9.28.
 
-The v7 full installer bundles the exact Windows wheels and hashes in
-requirements.lock, plus fonts and a layout model. On explicit initialization,
+The Windows full installer bundles the exact wheels and hashes in
+requirements.lock; the Apple Silicon full package uses the independent
+requirements.macos-arm64.lock (macOS 14+). Both include fonts and a layout model.
+On explicit initialization,
 uv installs only from the local wheelhouse into the application's private env.
 No runtime dependency downloads are permitted. Original wheel contents are
 preserved. See ASSET-NOTICES.md and the accompanying source and license materials.

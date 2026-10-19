@@ -11,9 +11,11 @@ import html
 import json
 import logging
 import os
+import platform
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -462,11 +464,55 @@ def trim_cache(directory, keep):
             path.unlink(missing_ok=True)
 
 
+def payload_platform():
+    if sys.platform == "darwin":
+        if platform.machine().lower() not in ("arm64", "aarch64"):
+            raise EngineError("install", "此 PDF 引擎需要 Apple Silicon（arm64）运行环境。")
+        return "macos-arm64"
+    return "windows-x86_64"
+
+
+def requirements_path(resources):
+    name = "requirements.macos-arm64.lock" if sys.platform == "darwin" else "requirements.lock"
+    return resources / name
+
+
+def python_path(root, environment=False):
+    if sys.platform == "darwin":
+        return root / "bin" / ("python" if environment else "python3")
+    return root / "Scripts" / "python.exe" if environment else root / "python.exe"
+
+
+def watch_native_parent():
+    # Removed before uv/prepare children spawn: only the direct native child
+    # owns this watchdog. macOS has no Windows-style kill-on-close Job Object.
+    expected = os.environ.pop("READANY_PDF_PARENT_PID", None)
+    if expected is None or sys.platform != "darwin":
+        return
+    if not expected.isdecimal() or int(expected) <= 1 or os.getppid() != int(expected):
+        raise EngineError("engine", "PDF 引擎父进程校验失败。")
+    if os.getpgrp() != os.getpid():
+        raise EngineError("engine", "PDF 引擎进程隔离失败。")
+    parent = int(expected)
+    group = os.getpgrp()
+    def monitor():
+        while True:
+            time.sleep(0.25)
+            if os.getppid() != parent:
+                os.killpg(group, signal.SIGKILL)
+                return
+    threading.Thread(target=monitor, name="pdf-parent-watch", daemon=True).start()
+
+
 def verify_offline_payload(root, resources):
     try:
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-        if manifest["version"] != VERSION or manifest["lock"] != file_hash(resources / "requirements.lock"):
+        if manifest["version"] != VERSION or manifest["lock"] != file_hash(requirements_path(resources)):
             raise ValueError("payload version mismatch")
+        if sys.platform == "darwin" and manifest.get("platform") != payload_platform():
+            raise ValueError("payload platform mismatch")
+        if manifest.get("platform") not in (None, payload_platform()):
+            raise ValueError("payload platform mismatch")
         if not manifest["files"] or not any(x.startswith("wheels/") for x in manifest["files"]):
             raise ValueError("empty payload")
         for name, expected in manifest["files"].items():
@@ -486,16 +532,16 @@ def run_setup(request):
     resources = Path(request["resourceDir"])
     engine.mkdir(parents=True, exist_ok=True)
     # Only this private, app-owned environment is ever modified.
-    uv = runtime / "uv.exe"
+    uv = runtime / ("uv" if sys.platform == "darwin" else "uv.exe")
     env = engine / "env"
-    python = env / "Scripts/python.exe"
+    python = python_path(env, environment=True)
     progress("installing")
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     (engine / "ready.json").unlink(missing_ok=True)
     offline = resources.parent / "pdf-offline"
     manifest = verify_offline_payload(offline, resources)
-    for command in ([str(uv), "venv", "--offline", "--no-python-downloads", "--allow-existing", "--python", str(runtime / "python.exe"), str(env)],
-                    [str(uv), "pip", "sync", "--offline", "--no-index", "--find-links", str(offline / "wheels"), "--python", str(python), "--require-hashes", "--only-binary", ":all:", str(resources / "requirements.lock")]):
+    for command in ([str(uv), "venv", "--offline", "--no-python-downloads", "--allow-existing", "--python", str(python_path(runtime)), str(env)],
+                    [str(uv), "pip", "sync", "--offline", "--no-index", "--find-links", str(offline / "wheels"), "--python", str(python), "--require-hashes", "--only-binary", ":all:", str(requirements_path(resources))]):
         # uv prompts, stdout and stderr are not IPC. Parent Job Object owns descendants.
         result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, creationflags=flags)
@@ -508,14 +554,15 @@ def run_setup(request):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(offline / name, destination)
     child_request = {**request, "action": "prepare"}
-    result = subprocess.run([str(python), "-I", str(resources / "worker.py")],
+    result = subprocess.run([str(python), "-I", "-B", str(resources / "worker.py")],
                             input=json.dumps(child_request).encode(), stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, creationflags=flags)
     if result.returncode:
         raise EngineError("assets", "离线模型、字体或本机运行库校验失败，请重新安装完整版。")
     marker = engine / "ready.json"
     temporary = engine / "ready.tmp"
-    temporary.write_text(json.dumps({"version": VERSION, "lock": file_hash(resources / "requirements.lock")}), encoding="utf-8")
+    temporary.write_text(json.dumps({"version": VERSION, "lock": file_hash(requirements_path(resources)),
+                                     "platform": payload_platform()}), encoding="utf-8")
     os.replace(temporary, marker)
     emit("complete")
 
@@ -524,6 +571,12 @@ def configure_assets(request):
     # Import after the child-only home has been set. Mutable translation databases
     # remain per-job; only public fonts/models/tiktoken are shared across jobs.
     import babeldoc.const as const
+    if sys.platform == "darwin":
+        # Keep the first macOS release on the same CPU layout path as Windows.
+        # BabelDOC 0.6.2 selects CoreML through this module's OS discriminator;
+        # GPU acceleration is deliberately left for separately verified builds.
+        from babeldoc.docvision import doclayout
+        doclayout.os_name = "ReadAnyCPU"
     assets = Path(request["assetsDir"])
     assets.mkdir(parents=True, exist_ok=True)
     const.CACHE_FOLDER = assets
@@ -1554,6 +1607,7 @@ async def export_book(request):
 
 
 def main():
+    watch_native_parent()
     logging.disable(logging.CRITICAL)
     request = json.loads(sys.stdin.buffer.readline(128 * 1024))
     parse_translation_context(request.get("translationContext"))
@@ -1576,6 +1630,8 @@ def main():
             # Permit numeric loopback only; never resolve names or reach a remote host.
             def local_only(original):
                 def guarded(sock, address):
+                    if sock.family == socket.AF_UNIX:
+                        return original(sock, address)
                     try:
                         allowed = ipaddress.ip_address(address[0]).is_loopback
                     except (ValueError, TypeError):

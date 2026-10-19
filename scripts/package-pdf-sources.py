@@ -17,6 +17,7 @@ for folder in ('packages/app/src-tauri/pdf-engine', 'packages/app/src/components
         if path.is_file() and '__pycache__' not in path.parts:
             files.add(path.relative_to(root).as_posix())
 for file in ('packages/app/src-tauri/src/pdf_engine.rs', 'packages/app/src-tauri/tauri.windows.conf.json',
+             'packages/app/src-tauri/tauri.macos.conf.json',
              'packages/app/src/lib/reader/theme.ts',
              'packages/app/src/lib/reader/theme.test.ts',
              'packages/app/vitest.reader.config.ts',

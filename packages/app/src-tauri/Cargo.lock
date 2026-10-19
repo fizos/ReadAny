@@ -74,6 +74,7 @@ dependencies = [
  "base64 0.22.1",
  "dashmap",
  "futures-util",
+ "libc",
  "local-ip-address",
  "reqwest 0.12.28",
  "rusqlite",

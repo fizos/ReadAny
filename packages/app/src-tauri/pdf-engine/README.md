@@ -1,13 +1,13 @@
-# ReadAny optional high-fidelity PDF mode (Windows, experimental)
+# ReadAny optional high-fidelity PDF mode (Windows / Apple Silicon, experimental)
 
 This worker integrates PDFMathTranslate-next 2.9.0 and BabelDOC 0.6.2. It is a
-separate, optional path: quick immersive translation and EPUB are unchanged.
+separate, optional path; layout-preserving EPUB translation is independent.
 
 ## User workflow
 
 Open a PDF, choose **高保真 PDF 翻译（实验）** from the translation menu, then
 initialize the engine on first use. The v7 full installer includes portable
-Python, uv, hash-locked Windows wheels, fonts and the layout model. Initialization
+Python, uv, platform-specific hash-locked wheels, fonts and the layout model. Initialization
 is offline and requires approximately 1.2 GiB beyond the installed application,
 plus temporary working space. Translation still connects to the configured AI
 endpoint. No system Python configuration is necessary.
@@ -34,6 +34,32 @@ Keep license texts and corresponding sources with the distribution.
 Never include a harvested developer environment, AI settings, books,
 translation databases or working directories in an installer.
 
+### macOS Apple Silicon
+
+The full macOS package requires Apple Silicon and macOS 14 or later (the pinned
+ONNX Runtime wheel requires macOS 14). It embeds CPython 3.12.11, uv 0.9.28 and
+the independently resolved `requirements.macos-arm64.lock`; it does not require
+Homebrew, a system Python, Rosetta or an initial dependency download. The first
+macOS implementation deliberately uses CPU layout inference, not CoreML.
+
+Build on an arm64 macOS host with `scripts/prepare-pdf-macos.py`, then the macOS
+Tauri configuration includes `pdf-runtime/` and `pdf-offline/`. The signed app's
+resources stay immutable: initialization creates its environment, ready marker,
+assets and page caches under Application Support. Platform/payload identity and
+runtime location separate the environment from incompatible or relocated builds.
+
+The GitHub workflow builds and checks a relocated bundle using a fresh private
+engine directory, with an offline initialization/native-load check and PDF
+regression tests. These checks are not acceptance testing on the user's M1 or
+against their configured AI service. CI artifacts are ad-hoc signed, not Apple
+Developer ID signed or notarized. Preserve the `.app` intact when installing it.
+
+On the user's M1, verify first-time initialization, a normal text page, code and
+directory pages, changing pages while translation is pending, cached revisits,
+zoom/navigation and exporting to a new file. Also verify reopening the app and
+moving it to Applications; it may rebuild its private environment after a move.
+The original PDF must never be selected as the export destination.
+
 Initialization verifies payload hashes, creates a private environment with
 bundled Python and installs exclusively from the wheelhouse using `uv --offline`
 and `--no-index`. Preparation additionally blocks remote socket connections and DNS
@@ -47,7 +73,8 @@ Creating the installer does not install it or touch the user's library.
 
 ## Boundaries and verification
 
-Rust owns a single job, Windows kill-on-close Job Object, time limits (setup 20
+Rust owns a single job, a Windows kill-on-close Job Object or an isolated macOS
+process group with a parent-death watchdog, time limits (setup 20
 minutes, translation 4 minutes), input/output validation and cleanup. Requests
 arrive on stdin; API keys never enter arguments, settings files or diagnostic
 messages. The worker normalizes JSON/SSE responses, disables automatic retries,

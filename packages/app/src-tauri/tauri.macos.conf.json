@@ -1,0 +1,11 @@
+{
+  "bundle": {
+    "macOS": {
+      "minimumSystemVersion": "14.0"
+    },
+    "resources": {
+      "pdf-runtime/": "pdf-runtime/",
+      "pdf-offline/": "pdf-offline/"
+    }
+  }
+}

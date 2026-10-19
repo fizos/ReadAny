@@ -32,9 +32,12 @@ if args.action == "translate":
     request.update(filePath=str(Path(args.input).resolve()), page=args.page, targetLang="ZH", force=args.force,
                    baseUrl=endpoint["baseUrl"], apiKey=endpoint["apiKey"], model=saved["activeModel"],
                    profileId=endpoint["id"], useExactRequestUrl=endpoint.get("useExactRequestUrl", False))
-python = runtime / "python.exe" if args.action == "setup" else engine / "env/Scripts/python.exe"
+if sys.platform == 'darwin':
+    python = runtime / 'bin/python3' if args.action == 'setup' else engine / 'env/bin/python'
+else:
+    python = runtime / "python.exe" if args.action == "setup" else engine / "env/Scripts/python.exe"
 started = time.monotonic()
-process = subprocess.Popen([str(python), "-I", str(resources / "worker.py")], stdin=subprocess.PIPE,
+process = subprocess.Popen([str(python), "-I", "-B", str(resources / "worker.py")], stdin=subprocess.PIPE,
                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 process.stdin.write((json.dumps(request) + "\n").encode())
 process.stdin.close()
