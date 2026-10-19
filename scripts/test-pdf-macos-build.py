@@ -55,7 +55,7 @@ class BuildTests(unittest.TestCase):
             destination = root/'relocated'
             builder.copy_tree_preserving_relative_links(source, destination)
             self.assertFalse(os.path.isabs(os.readlink(destination/'python3')))
-            self.assertEqual((destination/'python3').resolve(), destination/'python3.12')
+            self.assertEqual((destination/'python3').resolve(), (destination/'python3.12').resolve())
 
     def test_signed_runtime_manifest_detects_mutations(self):
         with tempfile.TemporaryDirectory() as folder:

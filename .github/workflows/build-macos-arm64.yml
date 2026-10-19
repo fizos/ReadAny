@@ -130,6 +130,7 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$app" artifacts/ReadAny_1.3.6_macos_arm64_pdf_full.app.zip
           cp "$bundle"/dmg/*.dmg artifacts/
           cp "$root/packages/app/src-tauri/pdf-offline/manifest.json" artifacts/pdf-payload-manifest.json
+          cp "$root/docs/MACOS_PDF_TESTING.md" artifacts/M1-testing-guide.md
           cp "$root/fix-build/pdf-engine-v9-sources/ReadAny-v9-build-sources.zip" artifacts/
           for source_archive in "$root"/fix-build/pdf-engine-v7-sources/*.tar.gz; do
             cp "$source_archive" artifacts/
