@@ -51,7 +51,7 @@ jobs:
         run: >-
           pnpm --filter app tauri build
           --target aarch64-apple-darwin
-          --bundles dmg
+          --bundles app,dmg
           --ci
           --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
@@ -75,7 +75,7 @@ jobs:
             printf 'source_commit=%s\narchitecture=arm64\nsigning=ad-hoc\nnotarized=false\n' "$GITHUB_SHA"
             printf 'high_fidelity_pdf=windows-only\n'
             shasum -a 256 "$binary"
-            shasum -a 256 artifacts/*
+            shasum -a 256 artifacts/*.dmg artifacts/*.app.zip
           } > artifacts/build-manifest.txt
 
       - name: Upload macOS arm64 artifacts
