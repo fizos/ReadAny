@@ -1857,6 +1857,9 @@ impl RunningProcess {
     }
 
     fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        if self.job.leader_reaped {
+            return self.child.try_wait();
+        }
         if self.job.leader_exited()? {
             self.job.terminate();
             return self.job.wait(&mut self.child).map(Some);
@@ -2049,6 +2052,7 @@ struct MacProcessGroup {
     term_sent: bool,
     kill_sent: bool,
     term_at: Option<Instant>,
+    leader_reaped: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -2059,28 +2063,35 @@ impl MacProcessGroup {
         if pid <= 1 {
             return Err(());
         }
-        let pgid = unsafe { libc::getpgid(pid) };
-        if pgid != pid {
-            return Err(());
-        }
-        Ok(Self {
+        let group = Self {
             pid,
-            pgid,
+            pgid: pid,
             term_sent: false,
             kill_sent: false,
             term_at: None,
-        })
+            leader_reaped: false,
+        };
+        if !group.is_exact_group() {
+            return Err(());
+        }
+        Ok(group)
     }
 
     fn is_exact_group(&self) -> bool {
-        self.pid == self.pgid && self.pid > 1 && unsafe { libc::getpgid(self.pid) } == self.pgid
+        !self.leader_reaped
+            && self.pid == self.pgid
+            && self.pid > 1
+            && (unsafe { libc::getpgid(self.pid) } == self.pgid
+                // Darwin hides zombies from getpgid. WNOWAIT still proves
+                // this is our unreaped child, whose PID cannot be reused.
+                || self.leader_exited().unwrap_or(false))
     }
 
     fn signal_group(&self, signal: libc::c_int) {
         if self.is_exact_group() {
-            // A negative PID targets the process group.  The exact getpgid
-            // check above prevents a reused PID or an unrelated group from
-            // receiving a cancellation signal.
+            // process_group(0) established this group before exec. Keep its
+            // leader unreaped until signals are sent, then revoke ownership
+            // before wait can release the numeric PID for reuse.
             let _ = unsafe { libc::kill(-self.pgid, signal) };
         }
     }
@@ -2119,6 +2130,9 @@ impl MacProcessGroup {
     }
 
     fn wait(&mut self, child: &mut std::process::Child) -> io::Result<std::process::ExitStatus> {
+        if self.leader_reaped {
+            return child.wait();
+        }
         // Escalate without making every 100ms run-loop iteration sleep.  This
         // is intentionally bounded and also reaps the direct child.
         let deadline = Instant::now() + Self::TERM_GRACE + Duration::from_millis(100);
@@ -2130,6 +2144,7 @@ impl MacProcessGroup {
                 self.terminate();
                 self.signal_group(libc::SIGKILL);
                 self.kill_sent = true;
+                self.leader_reaped = true;
                 return child.wait();
             }
             self.terminate();
@@ -2138,6 +2153,7 @@ impl MacProcessGroup {
                     self.signal_group(libc::SIGKILL);
                     self.kill_sent = true;
                 }
+                self.leader_reaped = true;
                 return child.wait();
             }
             thread::sleep(Duration::from_millis(10));
@@ -2569,6 +2585,11 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         reader.join().unwrap();
+        assert!(process.job.leader_reaped);
+        assert!(!process.job.is_exact_group());
+        // Repeated cleanup must never signal a potentially reused PGID.
+        process.terminate();
+        assert!(process.try_wait().unwrap().is_some());
         assert!(
             unrelated.try_wait().unwrap().is_none(),
             "cancelled an unrelated process"
