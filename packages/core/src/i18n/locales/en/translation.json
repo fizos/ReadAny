@@ -35,6 +35,14 @@
     "providerAI": "AI Translation",
     "providerDeepL": "DeepL",
     "movePopover": "Move translation window",
-    "resizePopover": "Resize translation window"
+    "resizePopover": "Resize translation window",
+    "immersiveTranslation": "Immersive translation",
+    "startImmersive": "Start immersive translation",
+    "exitImmersive": "Exit immersive translation",
+    "immersivePartial": "Partially translated",
+    "immersivePartialHint": "Some text could not be translated.",
+    "immersiveNoText": "This page or section has no extractable text. Scanned PDFs require OCR.",
+    "immersiveTextLayerTimeout": "The PDF text layer is not ready yet.",
+    "immersiveFailed": "Translation failed."
   }
 }

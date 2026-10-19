@@ -23,6 +23,7 @@ export interface SectionItem {
   size: number;
   linear: string;
   href?: string;
+  resolveHref?: (href: string) => string;
   pageSpread?: "left" | "right" | "center" | "";
   createDocument: () => Promise<Document>;
 }

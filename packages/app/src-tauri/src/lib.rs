@@ -1,4 +1,5 @@
 mod db;
+mod pdf_engine;
 mod readany_cli;
 mod storage;
 mod sync;
@@ -30,6 +31,7 @@ pub fn run() {
         .manage(VectorDBState {
             db: Mutex::new(None),
         })
+        .manage(pdf_engine::PdfEngineState::new())
         .invoke_handler(tauri::generate_handler![
             sync::commands::sync_vacuum_into,
             sync::commands::sync_integrity_check,
@@ -47,9 +49,28 @@ pub fn run() {
             vector::vector_shutdown,
             readany_cli::readany_cli_run,
             web_fetch::safe_web_fetch,
+            pdf_engine::pdf_engine_info,
+            pdf_engine::pdf_engine_start,
+            pdf_engine::pdf_engine_status,
+            pdf_engine::pdf_engine_cancel,
+            pdf_engine::pdf_engine_result,
+            pdf_engine::pdf_engine_plan_result,
+            pdf_engine::pdf_engine_validate_export_destination,
+            pdf_engine::pdf_engine_save_export,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
+            let pdf_state = app.state::<pdf_engine::PdfEngineState>();
+            match (app.path().app_local_data_dir(), app.path().resource_dir()) {
+                (Ok(app_local_data_dir), Ok(resource_dir)) => {
+                    if let Err(error) =
+                        pdf_engine::configure_from_app(&pdf_state, app_local_data_dir, resource_dir)
+                    {
+                        eprintln!("[PdfEngine] Failed to initialize storage: {}", error);
+                    }
+                }
+                _ => eprintln!("[PdfEngine] Failed to resolve application paths"),
+            }
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             if let Some(window) = app.get_webview_window("main") {
                 if let Err(e) = window.set_decorations(false) {

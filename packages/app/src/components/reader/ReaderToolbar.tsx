@@ -6,7 +6,7 @@ import { useAnnotationStore } from "@/stores/annotation-store";
 import { useAppStore } from "@/stores/app-store";
 import { useNotebookStore } from "@/stores/notebook-store";
 import { useReaderStore } from "@/stores/reader-store";
-import type { ChapterTranslationState } from "@readany/core/hooks";
+import type { EpubTranslationState } from "./epub-translation/useEpubTranslation";
 import { generateId } from "@readany/core/utils";
 import {
   ArrowLeft,
@@ -28,6 +28,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { ChapterTranslationMenu } from "./ChapterTranslationBar";
 import type { TOCItem } from "./FoliateViewer";
+import type { HighFidelityPdfState } from "./immersive-translation/high-fidelity-pdf";
 
 interface ReaderToolbarProps {
   tabId: string;
@@ -41,12 +42,21 @@ interface ReaderToolbarProps {
   onToggleSettings?: () => void;
   onToggleChat?: () => void;
   onToggleTTS?: () => void;
-  chapterTranslationState: ChapterTranslationState;
-  onChapterTranslationStart: (targetLang?: string) => void;
-  onChapterTranslationCancel: () => void;
-  onToggleOriginalVisible: () => void;
-  onToggleTranslationVisible: () => void;
-  onChapterTranslationReset: () => void;
+  onBookTranslationProfile?: () => void;
+  bookContextStatus?: string;
+  epubTranslationState?: EpubTranslationState;
+  onEpubTranslationStart?: (targetLang?: string) => void;
+  onEpubTranslationCancel?: () => void;
+  onEpubTranslationRetry?: () => void;
+  onEpubTranslationExit?: () => void;
+  highFidelityPdfState?: HighFidelityPdfState;
+  onHighFidelityPdfStart?: (targetLang?: string) => void;
+  onHighFidelityPdfInstall?: () => void;
+  onHighFidelityPdfCancel?: () => void;
+  onHighFidelityPdfRetry?: () => void;
+  onHighFidelityPdfExit?: () => void;
+  isHighFidelityPdfSupported?: boolean;
+  isEpubTranslationSupported?: boolean;
   isChatOpen?: boolean;
   isTTSActive?: boolean;
   isFixedLayout?: boolean;
@@ -74,12 +84,21 @@ export function ReaderToolbar({
   onToggleSettings,
   onToggleChat,
   onToggleTTS,
-  chapterTranslationState,
-  onChapterTranslationStart,
-  onChapterTranslationCancel,
-  onToggleOriginalVisible,
-  onToggleTranslationVisible,
-  onChapterTranslationReset,
+  onBookTranslationProfile,
+  bookContextStatus,
+  epubTranslationState,
+  onEpubTranslationStart,
+  onEpubTranslationCancel,
+  onEpubTranslationRetry,
+  onEpubTranslationExit,
+  highFidelityPdfState,
+  onHighFidelityPdfStart,
+  onHighFidelityPdfInstall,
+  onHighFidelityPdfCancel,
+  onHighFidelityPdfRetry,
+  onHighFidelityPdfExit,
+  isHighFidelityPdfSupported = false,
+  isEpubTranslationSupported = false,
   isChatOpen,
   isTTSActive,
   isFixedLayout = false,
@@ -220,14 +239,23 @@ export function ReaderToolbar({
 
       {/* Right: translate + TTS + search + AI chat + settings */}
       <div className="flex items-center gap-0.5">
-        <ChapterTranslationMenu
-          state={chapterTranslationState}
-          onStart={onChapterTranslationStart}
-          onCancel={onChapterTranslationCancel}
-          onToggleOriginalVisible={onToggleOriginalVisible}
-          onToggleTranslationVisible={onToggleTranslationVisible}
-          onReset={onChapterTranslationReset}
-        />
+        {(isHighFidelityPdfSupported || isEpubTranslationSupported) && (
+          <ChapterTranslationMenu
+            epubState={isEpubTranslationSupported ? epubTranslationState : undefined}
+            onEpubStart={onEpubTranslationStart}
+            onEpubCancel={onEpubTranslationCancel}
+            onEpubRetry={onEpubTranslationRetry}
+            onEpubExit={onEpubTranslationExit}
+            onBookProfile={onBookTranslationProfile}
+            bookContextStatus={bookContextStatus}
+            highFidelityState={highFidelityPdfState}
+            onHighFidelityStart={onHighFidelityPdfStart}
+            onHighFidelityInstall={onHighFidelityPdfInstall}
+            onHighFidelityCancel={onHighFidelityPdfCancel}
+            onHighFidelityRetry={onHighFidelityPdfRetry}
+            onHighFidelityExit={onHighFidelityPdfExit}
+          />
+        )}
         <SyncButton iconSize={14} className="h-7 w-7" />
         {isFixedLayout && (
           <div

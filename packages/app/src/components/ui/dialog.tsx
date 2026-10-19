@@ -26,8 +26,10 @@ function DialogOverlay({
 function DialogContent({
   className,
   children,
+  layout = "default",
+  busy = false,
   ...props
-}: ComponentPropsWithoutRef<typeof DialogPrimitive.Content>) {
+}: ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & { layout?: "default" | "form"; busy?: boolean }) {
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -35,17 +37,24 @@ function DialogContent({
         className={cn(
           "fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
           className,
+          layout === "form" && "flex max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] flex-col overflow-hidden",
         )}
         {...props}
+        onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); props.onEscapeKeyDown?.(event); }}
+        onPointerDownOutside={(event) => { if (busy) event.preventDefault(); props.onPointerDownOutside?.(event); }}
       >
         {children}
-        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
+        <DialogPrimitive.Close disabled={busy} className="absolute right-4 top-4 cursor-pointer rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
           <X className="h-4 w-4" />
           <span className="sr-only">Close</span>
         </DialogPrimitive.Close>
       </DialogPrimitive.Content>
     </DialogPortal>
   );
+}
+
+function DialogBody({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn("min-h-0 flex-1 overflow-y-auto", className)} {...props} />;
 }
 
 function DialogHeader({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
@@ -94,6 +103,7 @@ export {
   Dialog,
   DialogClose,
   DialogContent,
+  DialogBody,
   DialogDescription,
   DialogFooter,
   DialogHeader,

@@ -54,7 +54,8 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "resources": {
-      "../../cli/dist/": "readany-cli/"
+      "../../cli/dist/": "readany-cli/",
+      "pdf-engine/": "pdf-engine/"
     },
     "icon": [
       "icons/32x32.png",

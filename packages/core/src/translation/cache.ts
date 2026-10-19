@@ -10,15 +10,56 @@ import type { TranslatorName } from "./types";
 
 const CACHE_PREFIX = "readany_translation_cache_";
 
+/**
+ * Request settings that affect an AI translation result.
+ *
+ * API keys are deliberately excluded: rotating a key does not change the
+ * provider/model response, and putting secrets in a persistent key is unsafe.
+ */
+export interface TranslationCacheConfig {
+  baseUrl?: string;
+  model?: string;
+  useExactRequestUrl?: boolean;
+  endpointId?: string;
+  /** Optional book-context identity; omitted for legacy/no-context calls. */
+  contextDigest?: string;
+  contextMode?: "book-v1" | "none";
+}
+
 /** Generate cache key */
 function getCacheKey(
   text: string,
   sourceLang: string,
   targetLang: string,
   provider: TranslatorName,
+  config?: TranslationCacheConfig,
 ): string {
   const hash = simpleHash(text);
-  return `${CACHE_PREFIX}${provider}_${sourceLang}_${targetLang}_${hash}`;
+  if (provider !== "ai") {
+    // Preserve the long-standing key shape for non-AI providers so their
+    // existing persistent translations remain reusable.
+    return `${CACHE_PREFIX}${provider}_${sourceLang}_${targetLang}_${hash}`;
+  }
+
+  const requestIdentity = JSON.stringify({
+    endpoint: normalizeEndpoint(config?.baseUrl),
+    model: config?.model?.trim() || "gpt-4o-mini",
+    useExactRequestUrl: config?.useExactRequestUrl === true,
+    endpointId: config?.endpointId?.trim() || "",
+    ...(config?.contextDigest
+      ? {
+          contextDigest: config.contextDigest,
+          contextMode: config.contextMode || "book-v1",
+        }
+      : {}),
+  });
+  const configHash = simpleHash(requestIdentity);
+  return `${CACHE_PREFIX}${provider}_${configHash}_${sourceLang}_${targetLang}_${hash}`;
+}
+
+function normalizeEndpoint(baseUrl?: string): string {
+  const trimmed = baseUrl?.trim().replace(/\/+$/, "");
+  return trimmed || "https://api.openai.com";
 }
 
 /** Simple hash function for cache key */
@@ -38,10 +79,11 @@ export async function getFromCache(
   sourceLang: string,
   targetLang: string,
   provider: TranslatorName,
+  config?: TranslationCacheConfig,
 ): Promise<string | null> {
   try {
     const platform = getPlatformService();
-    const key = getCacheKey(text, sourceLang, targetLang, provider);
+    const key = getCacheKey(text, sourceLang, targetLang, provider, config);
     const cached = await platform.kvGetItem(key);
     if (cached) {
       const { translation, timestamp } = JSON.parse(cached);
@@ -64,10 +106,11 @@ export async function storeInCache(
   sourceLang: string,
   targetLang: string,
   provider: TranslatorName,
+  config?: TranslationCacheConfig,
 ): Promise<void> {
   try {
     const platform = getPlatformService();
-    const key = getCacheKey(text, sourceLang, targetLang, provider);
+    const key = getCacheKey(text, sourceLang, targetLang, provider, config);
     await platform.kvSetItem(
       key,
       JSON.stringify({

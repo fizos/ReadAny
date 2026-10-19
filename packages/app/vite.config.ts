@@ -25,7 +25,10 @@ export default defineConfig(async () => ({
   },
   optimizeDeps: {
     // Exclude foliate-js pdf.js from pre-bundling so that @pdfjs alias works
-    exclude: ["foliate-js/pdf.js"],
+    // The PDF.js worker is imported as a local ?url asset. Keeping both the
+    // package and worker entry out of optimizeDeps avoids Vite trying to
+    // evaluate the worker as an optimized dependency during dev startup.
+    exclude: ["foliate-js/pdf.js", "pdfjs-dist", "pdfjs-dist/build/pdf.worker.mjs"],
   },
   clearScreen: false,
   server: {

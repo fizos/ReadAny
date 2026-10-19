@@ -15,7 +15,14 @@ export interface TranslationProvider {
     texts: string[],
     sourceLang: string,
     targetLang: string,
-    config: { apiKey?: string; baseUrl?: string; model?: string },
+    config: {
+      apiKey?: string;
+      baseUrl?: string;
+      model?: string;
+      useExactRequestUrl?: boolean;
+      endpointId?: string;
+    },
+    signal?: AbortSignal,
   ) => Promise<string[]>;
 }
 

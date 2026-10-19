@@ -6,7 +6,9 @@
  */
 
 import type { TranslationConfig } from "../types/translation";
+import type { ContextSnapshot } from "./book-context";
 import { getFromCache, storeInCache } from "./cache";
+import type { TranslationCacheConfig } from "./cache";
 import { aiTranslateBatch } from "./providers";
 import { deeplTranslate } from "./providers";
 import { microsoftTranslate } from "./providers";
@@ -50,6 +52,8 @@ export interface TranslateChapterOptions {
   onChunkComplete?: (results: ChapterTranslationResult[]) => void;
   /** Abort signal – checked between chunks */
   signal?: AbortSignal;
+  /** Optional immutable book context snapshot for AI translation. */
+  context?: ContextSnapshot;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,9 +110,24 @@ export async function translateChapter(
     onProgress,
     onChunkComplete,
     signal,
+    context,
   } = options;
 
   const providerId = config.provider.id;
+  const contextText = context?.status === "ready" ? context.serialized : "";
+  const cacheConfig: TranslationCacheConfig = {
+    ...config.provider,
+    ...(context?.digest
+      ? {
+          contextDigest: context.digest,
+          contextMode: context.status === "ready" ? "book-v1" : "none",
+        }
+      : {}),
+  };
+
+  if (signal?.aborted) {
+    throw new DOMException("The operation was aborted.", "AbortError");
+  }
 
   // Calculate total characters for progress
   const totalChars = paragraphs.reduce((sum, p) => sum + p.text.length, 0);
@@ -117,20 +136,33 @@ export async function translateChapter(
   const allResults: ChapterTranslationResult[] = [];
   const uncachedParas: ChapterParagraph[] = [];
 
-  await Promise.all(
-    paragraphs.map(async (p) => {
-      const cached = await getFromCache(p.text, sourceLang, targetLang, providerId);
-      if (cached) {
-        allResults.push({
-          paragraphId: p.id,
-          originalText: p.text,
-          translatedText: cached,
-        });
-      } else {
-        uncachedParas.push(p);
-      }
-    }),
+  const cachedResults = await Promise.all(
+    paragraphs.map(async (paragraph) => ({
+      paragraph,
+      cached: await getFromCache(
+        paragraph.text,
+        sourceLang,
+        targetLang,
+        providerId,
+        cacheConfig,
+      ),
+    })),
   );
+  for (const { paragraph, cached } of cachedResults) {
+    if (cached) {
+      allResults.push({
+        paragraphId: paragraph.id,
+        originalText: paragraph.text,
+        translatedText: cached,
+      });
+    } else {
+      uncachedParas.push(paragraph);
+    }
+  }
+
+  if (signal?.aborted) {
+    throw new DOMException("The operation was aborted.", "AbortError");
+  }
 
   // Emit cached results immediately so the UI can render them
   if (allResults.length > 0) {
@@ -169,7 +201,7 @@ export async function translateChapter(
 
       try {
         if (providerId === "microsoft") {
-          translatedTexts = await microsoftTranslate(texts, sourceLang, targetLang);
+          translatedTexts = await microsoftTranslate(texts, sourceLang, targetLang, signal);
         } else if (providerId === "ai") {
           translatedTexts = await aiTranslateBatch(
             texts,
@@ -179,6 +211,8 @@ export async function translateChapter(
             config.provider.baseUrl || "",
             config.provider.model || "",
             config.provider.useExactRequestUrl || false,
+            signal,
+            contextText,
           );
         } else {
           // DeepL — natively supports batch
@@ -188,10 +222,18 @@ export async function translateChapter(
             targetLang,
             config.provider.apiKey || "",
             config.provider.baseUrl,
+            signal,
           );
         }
       } catch (err) {
-        // On error, fill with empty strings so we don't break the loop
+        // Cancellation must escape the worker so callers can stop updating the
+        // reader; do not turn an aborted request into empty translations.
+        if (signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) {
+          throw err;
+        }
+
+        // On non-cancellation errors, fill with empty strings so we don't
+        // break the rest of the chapter.
         console.error("[translateChapter] chunk error:", err);
         translatedTexts = texts.map(() => "");
       }
@@ -208,9 +250,14 @@ export async function translateChapter(
         newResults.push(result);
 
         if (translatedTexts[i]) {
-          storeInCache(chunk[i].text, translatedTexts[i], sourceLang, targetLang, providerId).catch(
-            (err) => console.warn("[Translation] Failed to cache translation result:", err),
-          );
+          storeInCache(
+            chunk[i].text,
+            translatedTexts[i],
+            sourceLang,
+            targetLang,
+            providerId,
+            cacheConfig,
+          ).catch((err) => console.warn("[Translation] Failed to cache translation result:", err));
         }
       }
 
@@ -229,5 +276,10 @@ export async function translateChapter(
   }
   await Promise.all(workers);
 
-  return [...allResults, ...newResults];
+  const resultsByParagraph = new Map(
+    [...allResults, ...newResults].map((result) => [result.paragraphId, result]),
+  );
+  return paragraphs
+    .map((paragraph) => resultsByParagraph.get(paragraph.id))
+    .filter((result): result is ChapterTranslationResult => Boolean(result));
 }

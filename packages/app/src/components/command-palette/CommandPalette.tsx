@@ -285,6 +285,18 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
         },
         shortcut: "⌘⇧P",
       },
+      {
+        id: "action.theme.green",
+        label: `${t("settings.theme")}: ${t("settings.green")}`,
+        keywords: ["theme", "green", "eye", "护眼", "绿色"],
+        category: "actions",
+        icon: Sun,
+        action: () => {
+          document.documentElement.setAttribute("data-theme", "green");
+          localStorage.setItem("readany-theme", "green");
+          onClose();
+        },
+      },
     ];
   }, [t, setShowSettings, onClose]);
 

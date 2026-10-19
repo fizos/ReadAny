@@ -55,7 +55,7 @@ pub async fn start_lan_server(
     }
 
     let pending = state.pending_requests.clone();
-    
+
     let router = Router::new()
         .route("/{*path}", any(handler))
         .route("/", any(handler))
@@ -102,7 +102,10 @@ pub async fn lan_server_respond(
 }
 
 async fn handler(
-    State((app, pending)): State<(AppHandle, Arc<DashMap<String, oneshot::Sender<LanResponsePayload>>>)>,
+    State((app, pending)): State<(
+        AppHandle,
+        Arc<DashMap<String, oneshot::Sender<LanResponsePayload>>>,
+    )>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -130,7 +133,11 @@ async fn handler(
     let payload = LanRequestPayload {
         req_id: req_id.clone(),
         method: method.as_str().to_string(),
-        path: uri.path_and_query().map(|pq| pq.as_str()).unwrap_or(uri.path()).to_string(),
+        path: uri
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or(uri.path())
+            .to_string(),
         headers: headers_map,
         body_base64,
     };
@@ -142,9 +149,10 @@ async fn handler(
 
     match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
         Ok(Ok(res)) => {
-            let mut response_builder = axum::response::Response::builder()
-                .status(StatusCode::from_u16(res.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR));
-            
+            let mut response_builder = axum::response::Response::builder().status(
+                StatusCode::from_u16(res.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            );
+
             for (k, v) in res.headers {
                 response_builder = response_builder.header(k, v);
             }

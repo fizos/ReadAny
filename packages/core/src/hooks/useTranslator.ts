@@ -43,12 +43,31 @@ export function useTranslator(options: UseTranslatorOptions = {}) {
 
       const targetLanguage = targetLang || translationConfig.targetLang;
       const providerId = translationConfig.provider.id;
+      const aiEndpointId = translationConfig.provider.endpointId || aiConfig.activeEndpointId;
+      const aiEndpoint =
+        providerId === "ai" ? aiConfig.endpoints.find((e) => e.id === aiEndpointId) : undefined;
+      const cacheConfig =
+        providerId === "ai"
+          ? {
+              ...translationConfig.provider,
+              baseUrl: aiEndpoint?.baseUrl ?? translationConfig.provider.baseUrl,
+              model: translationConfig.provider.model || aiConfig.activeModel,
+              useExactRequestUrl:
+                aiEndpoint?.useExactRequestUrl ?? translationConfig.provider.useExactRequestUrl,
+            }
+          : translationConfig.provider;
 
       const cachedResults: string[] = [];
       const needsTranslation: { index: number; text: string }[] = [];
       await Promise.all(
         textsToTranslate.map(async (text, index) => {
-          const cached = await getFromCache(text, sourceLang, targetLanguage, providerId);
+          const cached = await getFromCache(
+            text,
+            sourceLang,
+            targetLanguage,
+            providerId,
+            cacheConfig,
+          );
           if (cached) {
             cachedResults[index] = cached;
           } else {
@@ -68,8 +87,7 @@ export function useTranslator(options: UseTranslatorOptions = {}) {
         let translatedTexts: string[];
 
         if (providerId === "ai") {
-          const endpointId = translationConfig.provider.endpointId || aiConfig.activeEndpointId;
-          const endpoint = aiConfig.endpoints.find((e) => e.id === endpointId);
+          const endpoint = aiEndpoint;
           const model = translationConfig.provider.model || aiConfig.activeModel;
 
           if (!endpoint || (providerRequiresApiKey(endpoint.provider) && !endpoint.apiKey)) {
@@ -110,7 +128,14 @@ export function useTranslator(options: UseTranslatorOptions = {}) {
         await Promise.all(
           needsTranslation.map(async ({ text }, i) => {
             if (translatedTexts[i]) {
-              await storeInCache(text, translatedTexts[i], sourceLang, targetLanguage, providerId);
+              await storeInCache(
+                text,
+                translatedTexts[i],
+                sourceLang,
+                targetLanguage,
+                providerId,
+                cacheConfig,
+              );
             }
           }),
         );

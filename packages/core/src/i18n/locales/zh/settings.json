@@ -47,6 +47,7 @@
     "light": "浅色",
     "dark": "深色",
     "sepia": "护眼",
+    "green": "护眼绿",
     "autoSave": "自动保存间隔",
     "autoSaveDesc": "阅读进度保存频率",
     "languageDesc": "选择界面显示语言",

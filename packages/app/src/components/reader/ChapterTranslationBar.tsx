@@ -1,12 +1,4 @@
-/**
- * ChapterTranslationMenu — dropdown menu attached to the toolbar Languages button.
- *
- * States:  idle → language selector + translate button
- *          extracting / translating → progress + cancel
- *          complete → toggle original / translation visibility + clear
- *          error → message + retry + clear
- */
-
+/** Toolbar menu for the PDF high-fidelity translation workflow. */
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -22,37 +14,57 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { ChapterTranslationState } from "@readany/core/hooks";
 import { useSettingsStore } from "@/stores/settings-store";
 import type { TranslationTargetLang } from "@readany/core/types/translation";
 import { TRANSLATOR_LANGS } from "@readany/core/types/translation";
-import { Check, Eye, EyeOff, Languages, Loader2, Trash2, X } from "lucide-react";
+import { Languages, RefreshCw, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { EpubTranslationState } from "./epub-translation/useEpubTranslation";
+import type { HighFidelityPdfState } from "./immersive-translation/high-fidelity-pdf";
 
 interface ChapterTranslationMenuProps {
-  state: ChapterTranslationState;
-  onStart: (targetLang?: string) => void;
-  onCancel: () => void;
-  onToggleOriginalVisible: () => void;
-  onToggleTranslationVisible: () => void;
-  onReset: () => void;
+  epubState?: EpubTranslationState;
+  onEpubStart?: (targetLang?: string) => void;
+  onEpubCancel?: () => void;
+  onEpubRetry?: () => void;
+  onEpubExit?: () => void;
+  onBookProfile?: () => void;
+  bookContextStatus?: string;
+  highFidelityState?: HighFidelityPdfState;
+  onHighFidelityStart?: (targetLang?: string) => void;
+  onHighFidelityInstall?: () => void;
+  onHighFidelityCancel?: () => void;
+  onHighFidelityRetry?: () => void;
+  onHighFidelityExit?: () => void;
 }
 
 export function ChapterTranslationMenu({
-  state,
-  onStart,
-  onCancel,
-  onToggleOriginalVisible,
-  onToggleTranslationVisible,
-  onReset,
+  epubState,
+  onEpubStart,
+  onEpubCancel,
+  onEpubRetry,
+  onEpubExit,
+  onBookProfile,
+  bookContextStatus,
+  highFidelityState,
+  onHighFidelityStart,
+  onHighFidelityInstall,
+  onHighFidelityCancel,
+  onHighFidelityRetry,
+  onHighFidelityExit,
 }: ChapterTranslationMenuProps) {
   const { t } = useTranslation();
   const defaultLang = useSettingsStore((s) => s.translationConfig.targetLang);
   const setTranslationLang = useSettingsStore((s) => s.setTranslationLang);
   const [selectedLang, setSelectedLang] = useState<TranslationTargetLang>(defaultLang);
-
-  const isActive = state.status !== "idle";
+  const isActive = Boolean(highFidelityState?.enabled || epubState?.enabled);
+  const isEpub = Boolean(epubState);
+  const activeLang = highFidelityState?.enabled
+    ? highFidelityState.targetLang
+    : epubState?.enabled
+      ? epubState.targetLang
+      : selectedLang;
 
   return (
     <DropdownMenu>
@@ -61,104 +73,155 @@ export function ChapterTranslationMenu({
           variant="ghost"
           size="icon"
           className={`h-7 w-7 ${isActive ? "bg-primary/10 text-primary" : ""}`}
-          title={t("translation.translateChapter")}
+          title={isEpub ? "高保真 EPUB 翻译" : "高保真 PDF 翻译"}
         >
           <Languages className="h-3.5 w-3.5" />
         </Button>
       </DropdownMenuTrigger>
 
       <DropdownMenuContent align="end" className="w-56">
-        {/* ── idle: language picker + translate ── */}
-        {state.status === "idle" && (
+        {onBookProfile && (
           <>
-            <div className="px-2 py-1.5">
-              <Select
-                value={selectedLang}
-                onValueChange={(v) => setSelectedLang(v as TranslationTargetLang)}
-              >
-                <SelectTrigger className="h-7 w-full text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.entries(TRANSLATOR_LANGS).map(([code, name]) => (
-                    <SelectItem key={code} value={code} className="text-xs">
-                      {name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
             <DropdownMenuItem
-              className="gap-2 text-xs"
-              onSelect={(e) => {
-                e.preventDefault();
-                setTranslationLang(selectedLang);
-                onStart(selectedLang);
+              onSelect={() => {
+                setTranslationLang(activeLang as TranslationTargetLang);
+                onBookProfile();
               }}
             >
-              <Languages className="h-3.5 w-3.5" />
-              {t("translation.translateChapter")}
+              本书翻译档案
             </DropdownMenuItem>
+            {bookContextStatus && (
+              <output className="block px-2 py-1.5 text-xs text-muted-foreground">
+                {bookContextStatus}
+              </output>
+            )}
+            <DropdownMenuSeparator />
           </>
         )}
 
-        {/* ── extracting ── */}
-        {state.status === "extracting" && (
-          <div className="flex items-center gap-2 px-2 py-2">
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-            <span className="text-xs text-muted-foreground">{t("common.loading")}</span>
-          </div>
-        )}
-
-        {/* ── translating: progress + cancel ── */}
-        {state.status === "translating" && (() => {
-          const { translatedChars, totalChars } = state.progress;
-          const pct = totalChars > 0 ? Math.round((translatedChars / totalChars) * 100) : 0;
-          return (
-            <>
-              <div className="px-2 py-2 space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
-                  <span className="text-xs text-muted-foreground">
-                    {t("translation.translatingProgress", {
-                      count: Math.round(translatedChars / 100),
-                      total: Math.round(totalChars / 100),
-                    })}
-                  </span>
+        {epubState ? (
+          <>
+            <div className="px-2 py-1.5 text-xs font-medium">高保真 EPUB 翻译</div>
+            {!epubState.enabled ? (
+              <>
+                <div className="px-2 py-1.5">
+                  <Select
+                    value={selectedLang}
+                    onValueChange={(value) => setSelectedLang(value as TranslationTargetLang)}
+                  >
+                    <SelectTrigger className="h-7 w-full text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(TRANSLATOR_LANGS).map(([code, name]) => (
+                        <SelectItem key={code} value={code} className="text-xs">
+                          {name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
-                <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-                  <div
-                    className="h-full bg-primary rounded-full transition-all duration-300"
-                    style={{ width: `${pct}%` }}
-                  />
-                </div>
-              </div>
-              <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="gap-2 text-xs"
+                  onSelect={() => {
+                    setTranslationLang(selectedLang);
+                    onEpubStart?.(selectedLang);
+                  }}
+                >
+                  <Languages className="h-3.5 w-3.5" />
+                  开始高保真 EPUB 翻译
+                </DropdownMenuItem>
+              </>
+            ) : (
+              <>
+                <output className="block px-2 py-1.5 text-xs text-muted-foreground">
+                  {epubState.status === "extracting"
+                    ? "读取当前页面"
+                    : epubState.status === "processing"
+                      ? `已翻译 ${epubState.completed} / ${epubState.requested} 段`
+                      : epubState.status === "error"
+                        ? epubState.error
+                        : epubState.status === "cancelled"
+                          ? "翻译已暂停"
+                          : "当前可见内容已处理"}
+                </output>
+                {epubState.status === "processing" && (
+                  <DropdownMenuItem onSelect={onEpubCancel}>
+                    <X className="mr-2 h-3.5 w-3.5" />
+                    暂停翻译
+                  </DropdownMenuItem>
+                )}
+                {(epubState.status === "error" || epubState.status === "cancelled") && (
+                  <DropdownMenuItem onSelect={onEpubRetry}>
+                    <RefreshCw className="mr-2 h-3.5 w-3.5" />
+                    重试当前内容
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={onEpubExit}>
+                  <X className="mr-2 h-3.5 w-3.5" />
+                  退出 EPUB 翻译
+                </DropdownMenuItem>
+              </>
+            )}
+          </>
+        ) : isActive && highFidelityState ? (
+          <>
+            <div className="px-2 py-1.5 text-xs font-medium">高保真 PDF 翻译</div>
+            <div className="px-2 pb-1.5 text-[11px] text-muted-foreground">
+              {highFidelityState.status === "needs-setup"
+                ? "需要首次初始化本地引擎"
+                : highFidelityState.status === "installing"
+                  ? "正在初始化本地引擎"
+                  : highFidelityState.status === "translating"
+                    ? `翻译中：${highFidelityState.phase}`
+                    : highFidelityState.status === "complete"
+                      ? "当前页已完成"
+                      : highFidelityState.status === "cancelled"
+                        ? "已取消"
+                        : "需要重试"}
+            </div>
+            {highFidelityState.status === "needs-setup" && onHighFidelityInstall && (
+              <DropdownMenuItem className="gap-2 text-xs" onSelect={onHighFidelityInstall}>
+                <Languages className="h-3.5 w-3.5" />
+                初始化并翻译当前页
+              </DropdownMenuItem>
+            )}
+            {(highFidelityState.status === "installing" ||
+              highFidelityState.status === "translating") &&
+              onHighFidelityCancel && (
+                <DropdownMenuItem
+                  className="gap-2 text-xs text-destructive"
+                  onSelect={onHighFidelityCancel}
+                >
+                  <X className="h-3.5 w-3.5" />
+                  取消
+                </DropdownMenuItem>
+              )}
+            {(highFidelityState.status === "error" || highFidelityState.status === "cancelled") &&
+              onHighFidelityRetry && (
+                <DropdownMenuItem className="gap-2 text-xs" onSelect={onHighFidelityRetry}>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  {t("common.retry")}
+                </DropdownMenuItem>
+              )}
+            <DropdownMenuSeparator />
+            {onHighFidelityExit && (
               <DropdownMenuItem
                 className="gap-2 text-xs text-destructive"
-                onSelect={onCancel}
+                onSelect={onHighFidelityExit}
               >
-                <X className="h-3.5 w-3.5" />
-                {t("translation.cancelTranslation")}
+                <Trash2 className="h-3.5 w-3.5" />
+                退出高保真翻译
               </DropdownMenuItem>
-            </>
-          );
-        })()}
-
-        {/* ── complete: toggle original / translation + clear ── */}
-        {state.status === "complete" && (
+            )}
+          </>
+        ) : (
           <>
-            <div className="flex items-center gap-1 px-2 py-1">
-              <Check className="h-3 w-3 text-green-600 dark:text-green-400" />
-              <span className="text-xs text-green-600 dark:text-green-400">
-                {t("translation.chapterTranslated")}
-              </span>
-            </div>
-            <DropdownMenuSeparator />
             <div className="px-2 py-1.5">
               <Select
                 value={selectedLang}
-                onValueChange={(v) => setSelectedLang(v as TranslationTargetLang)}
+                onValueChange={(value) => setSelectedLang(value as TranslationTargetLang)}
               >
                 <SelectTrigger className="h-7 w-full text-xs">
                   <SelectValue />
@@ -172,90 +235,19 @@ export function ChapterTranslationMenu({
                 </SelectContent>
               </Select>
             </div>
-            <DropdownMenuItem
-              className="gap-2 text-xs"
-              onSelect={(e) => {
-                e.preventDefault();
-                setTranslationLang(selectedLang);
-                onStart(selectedLang);
-              }}
-            >
-              <Languages className="h-3.5 w-3.5" />
-              {t("translation.translateChapter")}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              className="gap-2 text-xs"
-              onSelect={(e) => {
-                e.preventDefault();
-                onToggleOriginalVisible();
-              }}
-            >
-              {state.originalVisible ? (
-                <Eye className="h-3.5 w-3.5" />
-              ) : (
-                <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
-              )}
-              <span className="flex-1">{t("translation.original")}</span>
-              {state.originalVisible && <Check className="h-3 w-3 text-primary" />}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="gap-2 text-xs"
-              onSelect={(e) => {
-                e.preventDefault();
-                onToggleTranslationVisible();
-              }}
-            >
-              {state.translationVisible ? (
-                <Eye className="h-3.5 w-3.5" />
-              ) : (
-                <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
-              )}
-              <span className="flex-1">{t("translation.translationLabel")}</span>
-              {state.translationVisible && <Check className="h-3 w-3 text-primary" />}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              className="gap-2 text-xs text-destructive"
-              onSelect={(e) => {
-                e.preventDefault();
-                onReset();
-              }}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              {t("common.remove")}
-            </DropdownMenuItem>
-          </>
-        )}
-
-        {/* ── error: message + retry + clear ── */}
-        {state.status === "error" && (
-          <>
-            <div className="px-2 py-1.5">
-              <span className="text-xs text-destructive">{state.message}</span>
-            </div>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              className="gap-2 text-xs"
-              onSelect={(e) => {
-                e.preventDefault();
-                setTranslationLang(selectedLang);
-                onStart(selectedLang);
-              }}
-            >
-              <Languages className="h-3.5 w-3.5" />
-              {t("common.retry")}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="gap-2 text-xs text-destructive"
-              onSelect={(e) => {
-                e.preventDefault();
-                onReset();
-              }}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              {t("common.remove")}
-            </DropdownMenuItem>
+            {onHighFidelityStart && (
+              <DropdownMenuItem
+                className="gap-2 text-xs"
+                onSelect={(event) => {
+                  event.preventDefault();
+                  setTranslationLang(selectedLang);
+                  onHighFidelityStart(selectedLang);
+                }}
+              >
+                <Languages className="h-3.5 w-3.5" />
+                高保真 PDF 翻译
+              </DropdownMenuItem>
+            )}
           </>
         )}
       </DropdownMenuContent>

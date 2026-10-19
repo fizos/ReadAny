@@ -6,16 +6,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Coffee, Moon, Sun } from "lucide-react";
+import { Coffee, Leaf, Moon, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-type ThemeMode = "light" | "dark" | "sepia";
+type ThemeMode = "light" | "dark" | "sepia" | "green";
 
 const THEME_CONFIG: Record<ThemeMode, { icon: typeof Sun; labelKey: string }> = {
   light: { icon: Sun, labelKey: "settings.light" },
   dark: { icon: Moon, labelKey: "settings.dark" },
   sepia: { icon: Coffee, labelKey: "settings.sepia" },
+  green: { icon: Leaf, labelKey: "settings.green" },
 };
 
 import { OnboardingLayout } from "../OnboardingLayout";
@@ -73,7 +74,7 @@ export function AppearancePage({ onNext, onPrev, step, totalSteps }: any) {
             <h3 className="mb-3 text-xs font-medium text-foreground uppercase tracking-wide">
               {t("settings.theme", "Theme")}
             </h3>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 gap-2">
               {(Object.keys(THEME_CONFIG) as ThemeMode[]).map((mode) => {
                 const config = THEME_CONFIG[mode];
                 const Icon = config.icon;
@@ -82,7 +83,8 @@ export function AppearancePage({ onNext, onPrev, step, totalSteps }: any) {
                   <button
                     key={mode}
                     onClick={() => handleThemeChange(mode)}
-                    className={`flex flex-col items-center justify-center gap-1.5 rounded-lg border py-3 transition-all duration-300 ${
+                    aria-pressed={isActive}
+                    className={`flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border py-3 transition-all duration-300 active:opacity-80 ${
                       isActive
                         ? "border-primary bg-primary/10 text-primary shadow-[0_0_15px_rgba(var(--primary),0.2)]"
                         : "border-border bg-card text-muted-foreground hover:border-primary/50 hover:bg-muted"

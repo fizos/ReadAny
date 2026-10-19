@@ -156,22 +156,19 @@ impl VectorDB {
     }
 
     pub fn delete_by_book_id(&self, book_id: &str) -> Result<()> {
-        let rowids: Vec<i64> = self.conn
+        let rowids: Vec<i64> = self
+            .conn
             .prepare("SELECT rowid FROM id_mapping WHERE book_id = ?")?
             .query_map(params![book_id], |row| row.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         for rowid in &rowids {
-            self.conn.execute(
-                "DELETE FROM vec_embeddings WHERE rowid = ?",
-                params![rowid],
-            )?;
+            self.conn
+                .execute("DELETE FROM vec_embeddings WHERE rowid = ?", params![rowid])?;
         }
 
-        self.conn.execute(
-            "DELETE FROM id_mapping WHERE book_id = ?",
-            params![book_id],
-        )?;
+        self.conn
+            .execute("DELETE FROM id_mapping WHERE book_id = ?", params![book_id])?;
 
         Ok(())
     }
@@ -183,26 +180,28 @@ impl VectorDB {
     }
 
     pub fn rebuild_from_main_db(&self, main_db_path: &PathBuf) -> Result<usize> {
-        println!("[VectorDB] Rebuilding from main database: {:?}", main_db_path);
-        
+        println!(
+            "[VectorDB] Rebuilding from main database: {:?}",
+            main_db_path
+        );
+
         let main_conn = Connection::open(main_db_path)?;
-        
-        let mut stmt = main_conn.prepare(
-            "SELECT id, book_id, embedding FROM chunks WHERE embedding IS NOT NULL"
-        )?;
-        
+
+        let mut stmt = main_conn
+            .prepare("SELECT id, book_id, embedding FROM chunks WHERE embedding IS NOT NULL")?;
+
         let rows = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
             let book_id: String = row.get(1)?;
             let embedding_blob: Option<Vec<u8>> = row.get(2)?;
             Ok((id, book_id, embedding_blob))
         })?;
-        
+
         self.clear_all()?;
-        
+
         let tx = self.conn.unchecked_transaction()?;
         let mut count = 0;
-        
+
         for row_result in rows {
             let (id, book_id, embedding_blob) = row_result?;
             if let Some(blob) = embedding_blob {
@@ -210,25 +209,26 @@ impl VectorDB {
                 if embedding.len() != self.dimension {
                     continue;
                 }
-                
-                let embedding_bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
-                
+
+                let embedding_bytes: Vec<u8> =
+                    embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+
                 self.conn.execute(
                     "INSERT INTO id_mapping(chunk_id, book_id) VALUES (?, ?)",
                     params![id, book_id],
                 )?;
-                
+
                 let rowid: i64 = self.conn.last_insert_rowid();
-                
+
                 self.conn.execute(
                     "INSERT INTO vec_embeddings(rowid, embedding) VALUES (?, ?)",
                     params![rowid, embedding_bytes],
                 )?;
-                
+
                 count += 1;
             }
         }
-        
+
         tx.commit()?;
         println!("[VectorDB] Rebuilt {} vectors from main database", count);
         Ok(count)
@@ -265,12 +265,16 @@ impl VectorDB {
 
     pub fn reinit(&mut self, dimension: usize) -> Result<()> {
         if dimension == self.dimension {
-            println!("[VectorDB] reinit skipped — dimension already {}", dimension);
+            println!(
+                "[VectorDB] reinit skipped — dimension already {}",
+                dimension
+            );
             return Ok(());
         }
         println!("[VectorDB] reinit: {} → {}", self.dimension, dimension);
 
-        self.conn.execute("DROP TABLE IF EXISTS vec_embeddings", [])?;
+        self.conn
+            .execute("DROP TABLE IF EXISTS vec_embeddings", [])?;
         self.conn.execute("DELETE FROM id_mapping", [])?;
 
         self.conn.execute(
@@ -289,11 +293,9 @@ impl VectorDB {
     }
 
     pub fn get_stats(&self) -> Result<(usize, usize)> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM id_mapping",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM id_mapping", [], |row| row.get(0))?;
 
         Ok((count as usize, self.dimension))
     }
@@ -389,7 +391,8 @@ pub fn vector_search(
     let db_guard = state.db.lock().unwrap();
 
     if let Some(db) = db_guard.as_ref() {
-        db.search(&query, &book_id, top_k).map_err(|e| e.to_string())
+        db.search(&query, &book_id, top_k)
+            .map_err(|e| e.to_string())
     } else {
         Err("Vector database not initialized".to_string())
     }
@@ -415,7 +418,8 @@ pub fn vector_rebuild(app: AppHandle) -> Result<usize, String> {
     if let Some(db) = db_guard.as_ref() {
         let app_dir = storage::resolve_data_root(&app)?;
         let main_db_path = app_dir.join("readany.db");
-        db.rebuild_from_main_db(&main_db_path).map_err(|e| e.to_string())
+        db.rebuild_from_main_db(&main_db_path)
+            .map_err(|e| e.to_string())
     } else {
         Err("Vector database not initialized".to_string())
     }

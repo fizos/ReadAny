@@ -61,6 +61,7 @@ import {
 } from "../../db/database";
 import { emitLibraryChanged } from "../../events/library-events";
 import { search } from "../../rag/search";
+import { type IPlatformService, setPlatformService } from "../../services/platform";
 import { loadFromFS } from "../../stores/persist";
 import { setFallbackContentProvider } from "../fallback-content-service";
 import { getAvailableTools } from "../tools";
@@ -75,6 +76,28 @@ function findTool(tools: ReturnType<typeof getAvailableTools>, name: string) {
   if (!tool) throw new Error(`Tool not found: ${name}`);
   return tool;
 }
+
+describe("desktop web tool registration", () => {
+  it("registers webSearch and webFetch when safe desktop fetch is available", () => {
+    setPlatformService({
+      capabilities: { safeWebFetch: true },
+      safeWebFetch: vi.fn(),
+    } as unknown as IPlatformService);
+
+    try {
+      const names = getAvailableTools({
+        bookId: "book-1",
+        isVectorized: false,
+        enabledSkills: [],
+      }).map((tool) => tool.name);
+
+      expect(names).toContain("webSearch");
+      expect(names).toContain("webFetch");
+    } finally {
+      setPlatformService(null as unknown as IPlatformService);
+    }
+  });
+});
 
 function makeChunk(overrides: Record<string, unknown> = {}) {
   return {

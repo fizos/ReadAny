@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Coffee, FolderOpen, HardDrive, Monitor, Moon, RotateCcw, Sun } from "lucide-react";
+import { Coffee, FolderOpen, HardDrive, Leaf, Monitor, Moon, RotateCcw, Sun } from "lucide-react";
 /**
  * GeneralSettings — app-level settings
  */
@@ -21,13 +21,14 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
-type ThemeMode = "light" | "dark" | "sepia" | "system";
+type ThemeMode = "light" | "dark" | "sepia" | "green" | "system";
 
 const THEME_CONFIG: Record<ThemeMode, { icon: typeof Sun; labelKey: string }> = {
   system: { icon: Monitor, labelKey: "settings.system" },
   light: { icon: Sun, labelKey: "settings.light" },
   dark: { icon: Moon, labelKey: "settings.dark" },
   sepia: { icon: Coffee, labelKey: "settings.sepia" },
+  green: { icon: Leaf, labelKey: "settings.green" },
 };
 
 export function GeneralSettings() {
@@ -184,12 +185,12 @@ export function GeneralSettings() {
       {/* Theme Section */}
       <section className="rounded-lg bg-muted/60 p-4">
         <h2 className="mb-4 text-sm font-medium text-foreground">{t("settings.theme")}</h2>
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <span className="text-sm text-foreground">{t("settings.theme")}</span>
             <p className="mt-1 text-xs text-muted-foreground">{t("settings.themeDesc")}</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {(Object.keys(THEME_CONFIG) as ThemeMode[]).map((mode) => {
               const config = THEME_CONFIG[mode];
               const Icon = config.icon;
@@ -198,7 +199,8 @@ export function GeneralSettings() {
                 <button
                   key={mode}
                   onClick={() => handleThemeChange(mode)}
-                  className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors ${
+                  aria-pressed={isActive}
+                  className={`flex cursor-pointer items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors active:opacity-80 ${
                     isActive
                       ? "bg-primary text-primary-foreground"
                       : "bg-muted text-muted-foreground hover:bg-muted/80"

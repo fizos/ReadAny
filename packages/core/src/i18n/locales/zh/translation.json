@@ -35,6 +35,14 @@
     "providerAI": "AI 翻译",
     "providerDeepL": "DeepL",
     "movePopover": "移动翻译窗口",
-    "resizePopover": "调整翻译窗口大小"
+    "resizePopover": "调整翻译窗口大小",
+    "immersiveTranslation": "沉浸式翻译",
+    "startImmersive": "开始沉浸式翻译",
+    "exitImmersive": "退出沉浸式翻译",
+    "immersivePartial": "部分内容已翻译",
+    "immersivePartialHint": "部分文字未能完成翻译。",
+    "immersiveNoText": "当前页面或章节没有可提取文字，扫描版 PDF 需要 OCR。",
+    "immersiveTextLayerTimeout": "PDF 文字层尚未加载完成。",
+    "immersiveFailed": "翻译失败。"
   }
 }

@@ -115,7 +115,7 @@ i18nReady.then(() => {
   if (savedTheme === "system") {
     const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
     document.documentElement.setAttribute("data-theme", prefersDark ? "dark" : "light");
-  } else if (savedTheme && ["light", "dark", "sepia"].includes(savedTheme)) {
+  } else if (savedTheme && ["light", "dark", "sepia", "green"].includes(savedTheme)) {
     document.documentElement.setAttribute("data-theme", savedTheme);
   } else {
     // Default to sepia theme

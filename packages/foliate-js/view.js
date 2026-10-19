@@ -512,7 +512,9 @@ export class View extends HTMLElement {
     }
   }
   async goTo(target) {
-    target = decodeURIComponent(target);
+    // Section indexes and fraction targets are navigation data, not URI text.
+    // Coercing a numeric index to a string sends it through resolveHref instead.
+    if (typeof target === "string") target = decodeURIComponent(target);
     const resolved = this.resolveNavigation(target);
     try {
       await this.renderer.goTo(resolved);

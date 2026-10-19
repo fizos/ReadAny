@@ -40,6 +40,8 @@ pnpm-debug.log*
 # Python
 __pycache__/
 *.py[cod]
+packages/app/src-tauri/pdf-runtime/
+packages/app/src-tauri/pdf-offline/
 
 readese/*
 

@@ -42,6 +42,9 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify reader regressions
+        run: pnpm --filter app exec vitest run --config vitest.reader.config.ts
+
       - name: Build Apple Silicon DMG
         env:
           APPLE_SIGNING_IDENTITY: "-"
@@ -52,11 +55,32 @@ jobs:
           --ci
           --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
+      - name: Verify and package Apple Silicon app
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="$GITHUB_WORKSPACE/packages/app/src-tauri/target/aarch64-apple-darwin/release/bundle"
+          app="$bundle/macos/ReadAny.app"
+          binary="$app/Contents/MacOS/app"
+          test -f "$binary"
+          test "$(lipo -archs "$binary")" = "arm64"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          mkdir -p artifacts
+          ditto -c -k --sequesterRsrc --keepParent "$app" artifacts/ReadAny_1.3.6_v21_macos_arm64.app.zip
+          for dmg in "$bundle"/dmg/*.dmg; do
+            hdiutil verify "$dmg"
+            cp "$dmg" artifacts/
+          done
+          {
+            printf 'source_commit=%s\narchitecture=arm64\nsigning=ad-hoc\nnotarized=false\n' "$GITHUB_SHA"
+            printf 'high_fidelity_pdf=windows-only\n'
+            shasum -a 256 "$binary"
+            shasum -a 256 artifacts/*
+          } > artifacts/build-manifest.txt
+
       - name: Upload macOS arm64 artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ReadAny-1.3.6-macos-arm64
           if-no-files-found: error
-          path: |
-            packages/app/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-            packages/app/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
+          path: artifacts/*

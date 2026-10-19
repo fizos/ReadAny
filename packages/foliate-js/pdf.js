@@ -215,6 +215,16 @@ const getSelectedText = (selection, container) => {
  */
 const render = async (page, doc, zoom) => {
   if (!doc) return;
+  const renderGeneration = (doc.__readanyPdfRenderGeneration ?? 0) + 1;
+  doc.__readanyPdfRenderGeneration = renderGeneration;
+  const isCurrentRender = () => doc.__readanyPdfRenderGeneration === renderGeneration;
+  doc.__readanyPdfTextLayer?.cancel?.();
+  doc.__readanyPdfTextLayer = null;
+  const textContainer = doc.querySelector(".textLayer");
+  if (textContainer) {
+    textContainer.setAttribute("data-readany-text-layer-state", "loading");
+    textContainer.replaceChildren();
+  }
   const scale = zoom;
   const outputScale = globalThis.devicePixelRatio || 1;
 
@@ -224,6 +234,17 @@ const render = async (page, doc, zoom) => {
   doc.documentElement.style.setProperty("--user-unit", "1");
   doc.documentElement.style.setProperty("--scale-round-x", "1px");
   doc.documentElement.style.setProperty("--scale-round-y", "1px");
+
+  // Keep page identity/geometry in unscaled PDF coordinates.  The text-layer
+  // consumer uses these values for zoom-independent source fingerprints.
+  const baseViewport = page.getViewport({ scale: 1 });
+  doc.documentElement.setAttribute(
+    "data-readany-pdf-page-key",
+    `page-${Math.max(0, Number(page.pageNumber ?? 1) - 1)}`,
+  );
+  doc.documentElement.setAttribute("data-readany-pdf-page-width", String(baseViewport.width));
+  doc.documentElement.setAttribute("data-readany-pdf-page-height", String(baseViewport.height));
+  doc.documentElement.setAttribute("data-readany-pdf-rotation", String(baseViewport.rotation ?? 0));
 
   const viewport = page.getViewport({ scale });
 
@@ -236,17 +257,17 @@ const render = async (page, doc, zoom) => {
   const canvasContext = canvas.getContext("2d");
   const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
   await page.render({ canvasContext, transform, viewport }).promise;
+  if (!isCurrentRender()) return;
 
   const canvasContainer = doc.querySelector("#canvas");
   if (!canvasContainer) return;
   canvasContainer.replaceChildren(doc.adoptNode(canvas));
 
   // Render text layer
-  const textContainer = doc.querySelector(".textLayer");
   if (textContainer) {
-    textContainer.replaceChildren();
+    let textLayer;
     try {
-      const textLayer = new pdfjsLib.TextLayer({
+      textLayer = new pdfjsLib.TextLayer({
         textContentSource: await page.streamTextContent({
           includeMarkedContent: true,
           disableNormalization: true,
@@ -254,9 +275,19 @@ const render = async (page, doc, zoom) => {
         container: textContainer,
         viewport,
       });
+      if (!isCurrentRender()) return;
+      doc.__readanyPdfTextLayer = textLayer;
       await textLayer.render();
+      if (!isCurrentRender()) return;
+      // An empty text layer is still a successful render.  Consumers can
+      // distinguish that unsupported case from a layer which is not ready.
+      textContainer.setAttribute("data-readany-text-layer-state", "ready");
     } catch (error) {
+      if (!isCurrentRender()) return;
+      textContainer.setAttribute("data-readany-text-layer-state", "error");
       console.error(`Failed to render PDF text layer for page ${page.pageNumber}.`, error);
+    } finally {
+      if (doc.__readanyPdfTextLayer === textLayer) doc.__readanyPdfTextLayer = null;
     }
 
     // Hide offscreen canvases created by TextLayer
@@ -461,7 +492,7 @@ const render = async (page, doc, zoom) => {
 
   // Render annotation layer (links etc.)
   const annotationDiv = doc.querySelector(".annotationLayer");
-  if (annotationDiv) {
+  if (annotationDiv && isCurrentRender()) {
     annotationDiv.replaceChildren();
     const linkService = {
       goToDestination: () => {},
@@ -471,12 +502,14 @@ const render = async (page, doc, zoom) => {
       },
     };
     try {
+      const annotations = await page.getAnnotations();
+      if (!isCurrentRender()) return;
       await new pdfjsLib.AnnotationLayer({
         page,
         viewport: viewport.clone({ dontFlip: true }),
         div: annotationDiv,
         linkService,
-      }).render({ annotations: await page.getAnnotations() });
+      }).render({ annotations });
     } catch {
       // Annotation rendering may fail for some pages
     }

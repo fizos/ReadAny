@@ -251,6 +251,20 @@ export function useChapterTranslation(options: UseChapterTranslationOptions) {
     let cancelled = false;
     async function restoreCachedTranslations() {
       try {
+        const providerId = translationConfig.provider.id;
+        const endpointId = translationConfig.provider.endpointId || aiConfig.activeEndpointId;
+        const endpoint =
+          providerId === "ai" ? aiConfig.endpoints.find((e) => e.id === endpointId) : undefined;
+        const cacheConfig =
+          providerId === "ai"
+            ? {
+                ...translationConfig.provider,
+                baseUrl: endpoint?.baseUrl ?? translationConfig.provider.baseUrl,
+                model: translationConfig.provider.model || aiConfig.activeModel,
+                useExactRequestUrl:
+                  endpoint?.useExactRequestUrl ?? translationConfig.provider.useExactRequestUrl,
+              }
+            : translationConfig.provider;
         const cached = await isChapterFullyCached(
           bookId,
           sectionIndex,
@@ -268,7 +282,6 @@ export function useChapterTranslation(options: UseChapterTranslationOptions) {
 
         const paragraphs = await getParagraphsRef.current();
         if (cancelled) return;
-        const providerId = translationConfig.provider.id;
         const results: ChapterTranslationResult[] = [];
 
         for (const p of paragraphs) {
@@ -277,6 +290,7 @@ export function useChapterTranslation(options: UseChapterTranslationOptions) {
             "AUTO",
             translationConfig.targetLang,
             providerId,
+            cacheConfig,
           );
           if (translation) {
             results.push({
@@ -316,14 +330,7 @@ export function useChapterTranslation(options: UseChapterTranslationOptions) {
     return () => {
       cancelled = true;
     };
-  }, [
-    ready,
-    state.status,
-    bookId,
-    sectionIndex,
-    translationConfig.targetLang,
-    translationConfig.provider.id,
-  ]);
+  }, [ready, state.status, bookId, sectionIndex, translationConfig, aiConfig]);
 
   return {
     state,

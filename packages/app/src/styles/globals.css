@@ -99,6 +99,30 @@
   --sidebar-foreground: #3d2b1f;
 }
 
+[data-theme="green"] {
+  --background: #e3eedf;
+  --foreground: #24362a;
+  --card: #ebf3e8;
+  --card-foreground: #24362a;
+  --popover: #ebf3e8;
+  --popover-foreground: #24362a;
+  --primary: #2f6b45;
+  --primary-foreground: #f3f8ef;
+  --secondary: #d3e3cf;
+  --secondary-foreground: #24362a;
+  --muted: #d3e3cf;
+  --muted-foreground: #51694f;
+  --accent: #d3e3cf;
+  --accent-foreground: #24362a;
+  --destructive: #b52c2c;
+  --destructive-foreground: #ffffff;
+  --border: #bccfb6;
+  --input: #bccfb6;
+  --ring: #2f6b45;
+  --sidebar: #ebf3e8;
+  --sidebar-foreground: #24362a;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

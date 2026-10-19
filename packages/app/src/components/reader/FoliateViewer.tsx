@@ -8,6 +8,14 @@ import type { BookDoc, BookFormat } from "@/lib/reader/document-loader";
 import { getDirection, isFixedLayoutBook } from "@/lib/reader/document-loader";
 import { getFontTheme } from "@/lib/reader/font-themes";
 import { registerIframeEventHandlers } from "@/lib/reader/iframe-event-handlers";
+import {
+  analyzeCanvasIsLight,
+  applyPdfPaperSurface,
+  getAppTheme,
+  getThemeColors,
+  PDF_THEME_FILTERS,
+  type AppTheme,
+} from "@/lib/reader/theme";
 import type {
   ChapterParagraph,
   ChapterTranslationResult,
@@ -32,69 +40,25 @@ import { marked } from "marked";
  * which is created by DocumentLoader.
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-
-type AppTheme = "light" | "dark" | "sepia";
-
-const THEME_COLORS: Record<AppTheme, { bg: string; fg: string; link: string }> = {
-  light: { bg: "#ffffff", fg: "#1a1a1a", link: "#2563eb" },
-  dark: { bg: "#121212", fg: "#f5f5f5", link: "#60a5fa" },
-  sepia: { bg: "#f0e6d2", fg: "#3d2b1f", link: "#6b4c2a" },
-};
+import {
+  type EpubVisibleViewport,
+  selectVisibleEpubSourceBlocks,
+} from "./immersive-translation/epub-visible-source";
+import {
+  buildEpubSourceSnapshot,
+  buildPdfSourceSnapshot,
+  collectPdfTextLayerSpans,
+} from "./immersive-translation/pdf-geometry";
+import { classifyPdfSourceResult } from "./immersive-translation/source-state";
+import type { ImmersiveSourceResult } from "./immersive-translation/types";
+import { selectionCompletionEvents, shouldPublishSelection } from "./reader-capabilities";
+import { collectEpubBlocks } from "./epub-translation/epub-dom";
+import type { EpubReadingSource } from "./epub-translation/useEpubTranslation";
 
 const READER_OVERRIDE_STYLE_ID = "__readany_reader_overrides__";
 
-function getAppTheme(): AppTheme {
-  if (typeof document === "undefined") return "dark";
-  const theme = document.documentElement.getAttribute("data-theme") as AppTheme | null;
-  return theme && THEME_COLORS[theme] ? theme : "dark";
-}
-
-function getThemeColors(theme: AppTheme) {
-  return THEME_COLORS[theme];
-}
-
-/** Per-theme CSS filter applied to PDF pages (fixed layout) in dark/sepia mode. */
-const PDF_THEME_FILTERS: Partial<Record<AppTheme, string>> = {
-  dark: "invert(0.93)",
-  // Numerically tuned (invert->sepia->contrast->brightness) so a white PDF page
-  // maps almost exactly to the sepia background #f0e6d2 (rgb 240,230,210);
-  // text lands on a readable warm dark brown.
-  sepia: "invert(0.245) sepia(0.286) contrast(1.328) brightness(1.005)",
-};
-
-/**
- * Decide whether a PDF page is a "light text page" that should be theme-filtered
- * (inverted / sepia-tinted) in dark/sepia mode. Photo-heavy or already-dark
- * pages are left untouched so images don't turn into negatives.
- */
-function analyzeCanvasIsLight(canvas: HTMLCanvasElement): boolean {
-  const size = 48;
-  const out = document.createElement("canvas");
-  out.width = size;
-  out.height = size;
-  const ctx = out.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return true;
-  try {
-    ctx.drawImage(canvas, 0, 0, size, size);
-    const data = ctx.getImageData(0, 0, size, size).data;
-    let light = 0;
-    for (let i = 0; i < data.length; i += 4) {
-      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-      if (lum > 200) light++;
-    }
-    // A text page is predominantly light; downsampling washes thin text into
-    // gray, so only rely on how much of the page is clearly light.
-    return light / (size * size) > 0.55;
-  } catch {
-    return true;
-  }
-}
-
 /** The PDF page canvas is rendered asynchronously (pdf.js); wait until it appears. */
-function waitForPdfPageCanvas(
-  doc: Document,
-  timeoutMs = 5000,
-): Promise<HTMLCanvasElement | null> {
+function waitForPdfPageCanvas(doc: Document, timeoutMs = 5000): Promise<HTMLCanvasElement | null> {
   return new Promise((resolve) => {
     const win = doc.defaultView ?? window;
     const raf =
@@ -693,12 +657,12 @@ export interface TTSSegmentDetail {
 
 /** Imperative handle exposed to parent via ref */
 export interface FoliateViewerHandle {
-  goNext: () => void;
-  goPrev: () => void;
+  goNext: () => Promise<void>;
+  goPrev: () => Promise<void>;
   goToHref: (href: string) => void;
   goToFraction: (fraction: number) => void;
   goToCFI: (cfi: string) => Promise<void>;
-  goToIndex: (index: number) => void;
+  goToIndex: (index: number) => Promise<void>;
   highlightCFITemporarily: (cfi: string, duration?: number) => void;
   // biome-ignore lint: foliate-js annotation format
   addAnnotation: (annotation: any, remove?: boolean) => void;
@@ -722,6 +686,9 @@ export interface FoliateViewerHandle {
   setTTSHighlight: (cfi: string | null, color?: string) => Promise<void>;
   /** Extract all paragraphs from current section for chapter translation */
   getChapterParagraphs: () => ChapterParagraph[];
+  getEpubTranslationSource: (sectionIndex: number) => EpubReadingSource | null;
+  /** Extract geometry-aware source blocks for immersive translation. */
+  getImmersiveTranslationSource: (bookId: string, sectionIndex: number) => ImmersiveSourceResult;
   /** Inject translated paragraphs below each original paragraph */
   injectChapterTranslations: (
     results: ChapterTranslationResult[],
@@ -810,11 +777,7 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
         const filter = PDF_THEME_FILTERS[theme];
         const iframe = doc.defaultView?.frameElement as HTMLIFrameElement | null;
         if (!iframe) return;
-        const background = THEME_COLORS[theme].bg;
-        iframe.style.filter = "";
-        iframe.style.backgroundColor = background;
-        doc.documentElement.style.backgroundColor = background;
-        if (doc.body) doc.body.style.backgroundColor = background;
+        applyPdfPaperSurface(doc, theme);
         if (!filter) {
           doc.documentElement.style.setProperty("--readany-pdf-filter", "none");
           return;
@@ -832,7 +795,7 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
         }
         doc.documentElement.style.setProperty(
           "--readany-pdf-filter",
-          isLight ? filter : "none",
+          isLight ? PDF_THEME_FILTERS[getAppTheme()] || "none" : "none",
         );
       },
       [bookKey],
@@ -851,11 +814,7 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
           if (!doc || !iframe) continue;
           const index = pdfDocIndexRef.current.get(doc);
           if (index == null) continue;
-          const background = THEME_COLORS[theme].bg;
-          iframe.style.filter = "";
-          iframe.style.backgroundColor = background;
-          doc.documentElement.style.backgroundColor = background;
-          if (doc.body) doc.body.style.backgroundColor = background;
+          applyPdfPaperSurface(doc, theme);
           if (!filter) {
             doc.documentElement.style.setProperty("--readany-pdf-filter", "none");
             continue;
@@ -933,7 +892,7 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
       return Math.max(1, (Number.isFinite(size) && size > 0 ? size : fallbackSize) - 96);
     }, []);
 
-    const goNextByMode = useCallback(() => {
+    const goNextByMode = useCallback(async () => {
       const view = viewRef.current;
       if (!view) return;
       console.log("[ReaderTap][viewer:navigate]", {
@@ -945,13 +904,13 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
         rendererPages: view.renderer?.pages,
       });
       if (view.renderer?.scrolled) {
-        void view.next(getScrollNavigationDistance());
+        await view.next(getScrollNavigationDistance());
         return;
       }
-      void view.next();
+      await view.next();
     }, [getScrollNavigationDistance]);
 
-    const goPrevByMode = useCallback(() => {
+    const goPrevByMode = useCallback(async () => {
       const view = viewRef.current;
       if (!view) return;
       console.log("[ReaderTap][viewer:navigate]", {
@@ -963,10 +922,10 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
         rendererPages: view.renderer?.pages,
       });
       if (view.renderer?.scrolled) {
-        void view.prev(getScrollNavigationDistance());
+        await view.prev(getScrollNavigationDistance());
         return;
       }
-      void view.prev();
+      await view.prev();
     }, [getScrollNavigationDistance]);
 
     const ensureDesktopTTS = useCallback(async () => {
@@ -1532,10 +1491,10 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
       ref,
       () => ({
         goNext: () => {
-          goNextByMode();
+          return goNextByMode();
         },
         goPrev: () => {
-          goPrevByMode();
+          return goPrevByMode();
         },
         goToHref: (href: string) => {
           viewRef.current?.goTo(href);
@@ -1546,8 +1505,8 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
         goToCFI: async (cfi: string) => {
           await viewRef.current?.goTo(cfi);
         },
-        goToIndex: (index: number) => {
-          viewRef.current?.goTo(index);
+        goToIndex: async (index: number) => {
+          await viewRef.current?.goTo(index);
         },
         highlightCFITemporarily: (cfi: string, duration = 1000) => {
           const view = viewRef.current;
@@ -1748,6 +1707,57 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
             // no-op
           }
         },
+        getEpubTranslationSource: (sectionIndex: number) => {
+          const renderer = viewRef.current?.renderer;
+          const contents = getRendererContents(viewRef.current);
+          const content =
+            contents.find((item) => item.index === sectionIndex && item.doc) ??
+            (contents.length === 1 ? contents[0] : undefined);
+          const doc = content?.doc;
+          if (!doc || format !== "EPUB") return null;
+          const blocks = collectEpubBlocks(doc);
+          let viewport: EpubVisibleViewport | null = null;
+          if (!renderer?.scrolled) {
+            const range = pickPaginatedVisibleRange(doc, renderer ?? {});
+            if (range) viewport = { mode: "paginated", left: range.left, right: range.right };
+          } else {
+            const frame = doc.defaultView?.frameElement as HTMLIFrameElement | null;
+            const rect = frame?.getBoundingClientRect();
+            const host = containerRef.current?.getBoundingClientRect();
+            if (frame && rect && host && frame.clientWidth > 0 && frame.clientHeight > 0) {
+              const scaleX = rect.width / frame.clientWidth;
+              const scaleY = rect.height / frame.clientHeight;
+              if (scaleX > 0 && scaleY > 0)
+                viewport = {
+                  mode: "scrolled",
+                  left: (Math.max(host.left, 0) - rect.left) / scaleX,
+                  right: (Math.min(host.right, window.innerWidth) - rect.left) / scaleX,
+                  top: (Math.max(host.top, 0) - rect.top) / scaleY,
+                  bottom: (Math.min(host.bottom, window.innerHeight) - rect.top) / scaleY,
+                };
+            }
+          }
+          if (!viewport) return null;
+          const measured = blocks.map((block, sourceIndex) => ({
+            id: block.id,
+            text: block.text,
+            tagName: block.element.tagName.toLowerCase(),
+            sourceIndex,
+            rects: Array.from(block.element.getClientRects()).map((rect) => ({
+              left: rect.left,
+              right: rect.right,
+              top: rect.top,
+              bottom: rect.bottom,
+              width: rect.width,
+              height: rect.height,
+            })),
+          }));
+          return {
+            document: doc,
+            sectionKey: bookDoc.sections?.[sectionIndex]?.id ?? String(sectionIndex),
+            visibleIds: selectVisibleEpubSourceBlocks(measured, viewport).map((block) => block.id),
+          };
+        },
         getChapterParagraphs: () => {
           try {
             const renderer = viewRef.current?.renderer;
@@ -1775,6 +1785,166 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
             return paragraphs;
           } catch {
             return [];
+          }
+        },
+        getImmersiveTranslationSource: (bookId: string, sectionIndex: number) => {
+          try {
+            const renderer = viewRef.current?.renderer;
+            const contents = getRendererContents(viewRef.current);
+            const content =
+              contents.find((item) => item.index === sectionIndex && item.doc) ??
+              (contents.length === 1 && contents[0]?.index == null ? contents[0] : undefined);
+            const doc = content?.doc;
+            if (!doc) {
+              return { status: "retryable", reason: "text-layer-not-ready" };
+            }
+
+            if (format !== "EPUB" && format !== "PDF") {
+              return {
+                status: "error",
+                message: "Immersive translation currently supports EPUB and text-based PDF files.",
+              };
+            }
+
+            if (format === "PDF") {
+              const textLayer = doc.querySelector<HTMLElement>(".textLayer");
+              const state = textLayer?.getAttribute("data-readany-text-layer-state");
+              if (state === "error") {
+                return classifyPdfSourceResult(
+                  "error",
+                  undefined,
+                  "PDF text layer failed to render",
+                );
+              }
+              if (state !== "ready") {
+                return classifyPdfSourceResult(
+                  state === "loading" ? "loading" : "missing",
+                  undefined,
+                );
+              }
+
+              const root = doc.documentElement;
+              const pageWidth = Number(root.getAttribute("data-readany-pdf-page-width"));
+              const pageHeight = Number(root.getAttribute("data-readany-pdf-page-height"));
+              const rotation = Number(root.getAttribute("data-readany-pdf-rotation") ?? 0);
+              const pageRect = textLayer?.getBoundingClientRect();
+              if (!textLayer || !pageRect || pageRect.width <= 0 || pageRect.height <= 0) {
+                return classifyPdfSourceResult("ready", undefined);
+              }
+              const normalizedPageWidth =
+                Number.isFinite(pageWidth) && pageWidth > 0 ? pageWidth : pageRect.width;
+              const normalizedPageHeight =
+                Number.isFinite(pageHeight) && pageHeight > 0 ? pageHeight : pageRect.height;
+              const pageKey =
+                root.getAttribute("data-readany-pdf-page-key") ??
+                `page-${Math.max(0, sectionIndex)}`;
+              const spans = collectPdfTextLayerSpans(textLayer, { pageRect, rotation });
+              const snapshot = buildPdfSourceSnapshot({
+                bookId,
+                sectionIndex,
+                pageKey,
+                pageWidth: normalizedPageWidth,
+                pageHeight: normalizedPageHeight,
+                rotation,
+                spans,
+              });
+              return classifyPdfSourceResult("ready", snapshot);
+            }
+
+            const blockSelector =
+              "p, h1, h2, h3, h4, h5, h6, li, blockquote, dd, dt, figcaption, pre, td, th";
+            const blocks = Array.from(doc.querySelectorAll(blockSelector));
+            const measuredBlocks = blocks.flatMap((element, sourceIndex) => {
+              const htmlElement = element as HTMLElement;
+              const text = htmlElement.innerText?.trim() || element.textContent?.trim() || "";
+              if (text.length < 2) return [];
+              return [
+                {
+                  id:
+                    htmlElement.getAttribute("data-translate-id") ??
+                    `epub_${sectionIndex}_${sourceIndex}`,
+                  text,
+                  tagName: element.tagName.toLowerCase(),
+                  sourceIndex,
+                  rects: Array.from(element.getClientRects()).map((rect) => ({
+                    left: rect.left,
+                    right: rect.right,
+                    top: rect.top,
+                    bottom: rect.bottom,
+                    width: rect.width,
+                    height: rect.height,
+                  })),
+                },
+              ];
+            });
+            let viewport: EpubVisibleViewport | null = null;
+            if (!renderer?.scrolled) {
+              const range = pickPaginatedVisibleRange(doc, renderer ?? {});
+              if (range) viewport = { mode: "paginated", left: range.left, right: range.right };
+            } else {
+              const iframe = doc.defaultView?.frameElement as HTMLIFrameElement | null;
+              const iframeRect = iframe?.getBoundingClientRect();
+              const containerRect = containerRef.current?.getBoundingClientRect();
+              if (
+                iframe &&
+                iframeRect &&
+                iframe.clientWidth > 0 &&
+                iframe.clientHeight > 0 &&
+                containerRect &&
+                containerRect.width > 0 &&
+                containerRect.height > 0
+              ) {
+                const scaleX = iframeRect.width / iframe.clientWidth;
+                const scaleY = iframeRect.height / iframe.clientHeight;
+                const hostLeft = Math.max(containerRect.left, 0);
+                const hostRight = Math.min(containerRect.right, window.innerWidth);
+                const hostTop = Math.max(containerRect.top, 0);
+                const hostBottom = Math.min(containerRect.bottom, window.innerHeight);
+                viewport = {
+                  mode: "scrolled",
+                  left: (hostLeft - iframeRect.left) / scaleX,
+                  right: (hostRight - iframeRect.left) / scaleX,
+                  top: (hostTop - iframeRect.top) / scaleY,
+                  bottom: (hostBottom - iframeRect.top) / scaleY,
+                };
+              }
+            }
+            if (!viewport) {
+              return { status: "retryable", reason: "text-layer-not-ready" };
+            }
+            const sourceBlocks = selectVisibleEpubSourceBlocks(measuredBlocks, viewport);
+            const rendererPage = Number(renderer?.page);
+            const positionKey = Number.isFinite(rendererPage)
+              ? `page-${rendererPage}`
+              : `visible-${sourceBlocks[0]?.id ?? "empty"}`;
+            const pageKey = `section-${sectionIndex}-${bookDoc.sections?.[sectionIndex]?.id ?? sectionIndex}-${positionKey}`;
+            const snapshot = buildEpubSourceSnapshot(bookId, sectionIndex, pageKey, sourceBlocks);
+            if (sourceBlocks.length) {
+              const first = sourceBlocks[0].sourceIndex;
+              const last = sourceBlocks[sourceBlocks.length - 1].sourceIndex;
+              const before = measuredBlocks
+                .filter((block) => block.sourceIndex < first && block.tagName !== "pre")
+                .slice(-1);
+              const after = measuredBlocks
+                .filter((block) => block.sourceIndex > last && block.tagName !== "pre")
+                .slice(0, 1);
+              snapshot.nearbyText = [...before, ...after]
+                .map((block) => block.text.slice(0, 600))
+                .join("\n");
+            }
+            if (snapshot.blocks.length === 0) {
+              return { status: "unsupported", reason: "no-extractable-text" };
+            }
+            return {
+              status: "ready",
+              snapshot,
+            };
+          } catch (error) {
+            return {
+              status: "error",
+              message:
+                error instanceof Error ? error.message : "Failed to extract immersive source",
+            };
           }
         },
         injectChapterTranslations: async (
@@ -2015,7 +2185,7 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
           onSectionLoad?.(detail.index);
         }
 
-        // PDF: follow the app theme with per-page smart inversion (dark/sepia)
+        // PDF: preserve paper colors; apply per-page smart inversion only in dark mode.
         if (format === "PDF" && detail.doc) {
           pdfDocIndexRef.current.set(detail.doc, detail.index ?? 0);
           void applyPdfPageThemeFilter(detail.doc, detail.index ?? 0, appTheme);
@@ -2043,7 +2213,16 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
           }
         })();
       },
-      [appTheme, bookKey, viewSettings, onLoaded, onSectionLoad, isFixedLayout, format, applyPdfPageThemeFilter],
+      [
+        appTheme,
+        bookKey,
+        viewSettings,
+        onLoaded,
+        onSectionLoad,
+        isFixedLayout,
+        format,
+        applyPdfPageThemeFilter,
+      ],
     );
     const docLoadHandlerRef = useRef(docLoadHandlerImpl);
     docLoadHandlerRef.current = docLoadHandlerImpl;
@@ -2336,6 +2515,9 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
         let pointerUpCleanup: (() => void) | null = null;
         let selectionDragPoint: SelectionDragPoint | null = null;
         let pageAdvanceLockUntil = 0;
+        let selectionPublishTimer: ReturnType<typeof setTimeout> | null = null;
+        let lastPublishedSelection = "";
+        let lastPublishedAt = 0;
         let lockedContainer: HTMLElement | null = null;
         let lockedContainerStyles: {
           scrollSnapType: string;
@@ -2471,6 +2653,30 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
           );
         };
 
+        const publishCurrentSelection = () => {
+          const newSelection = getSelectionFromView(doc);
+          if (!newSelection) return false;
+          const signature = `${newSelection.chapterIndex ?? -1}:${newSelection.text}`;
+          const now = Date.now();
+          if (!shouldPublishSelection(signature, now, lastPublishedSelection, lastPublishedAt)) {
+            return true;
+          }
+          lastPublishedSelection = signature;
+          lastPublishedAt = now;
+          currentSelectionRange.current = newSelection.range ?? null;
+          currentSelectionIndex.current = newSelection.chapterIndex;
+          onSelectionRef.current?.(newSelection);
+          return true;
+        };
+
+        const scheduleSelectionPublish = (delay = 60) => {
+          if (selectionPublishTimer) clearTimeout(selectionPublishTimer);
+          selectionPublishTimer = setTimeout(() => {
+            selectionPublishTimer = null;
+            publishCurrentSelection();
+          }, delay);
+        };
+
         const handlePointerUp = (ev: PointerEvent) => {
           // Clicks on links are handled by their own navigation (internal
           // links / footnotes); never treat them as page-turn taps. Use
@@ -2527,14 +2733,8 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
             const sel = doc.getSelection();
             const hasSelectionNow = sel && !sel.isCollapsed && sel.toString().trim().length > 0;
 
-            // Check if there's a new selection being made
-            const newSel = getSelectionFromView(doc);
-
-            if (newSel) {
-              // New selection made - update stored range and notify parent
-              currentSelectionRange.current = newSel.range ?? null;
-              currentSelectionIndex.current = newSel.chapterIndex;
-              onSelectionRef.current?.(newSel);
+            if (publishCurrentSelection()) {
+              // New selection made and delivered to the parent.
             } else if (currentSelectionRange.current) {
               // No new selection, but we had a previous selection
               // Selection was cleared (either by clicking inside to dismiss, or outside)
@@ -2615,6 +2815,14 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
         };
 
         const handleSelectionChange = () => {
+          const nativeSelection = doc.getSelection();
+          if (
+            nativeSelection &&
+            !nativeSelection.isCollapsed &&
+            nativeSelection.toString().trim()
+          ) {
+            scheduleSelectionPublish();
+          }
           if (!supportsCrossPageSelection()) return;
 
           const view = viewRef.current;
@@ -2671,11 +2879,26 @@ export const FoliateViewer = forwardRef<FoliateViewerHandle, FoliateViewerProps>
           handleSelectionChange();
         };
 
+        const handleMouseUpFallback = () => {
+          scheduleSelectionPublish(20);
+        };
+
         doc.addEventListener("pointerdown", handlePointerDown);
         doc.addEventListener("pointerup", handlePointerUp);
+        if (selectionCompletionEvents.includes("mouseup")) {
+          doc.addEventListener("mouseup", handleMouseUpFallback);
+        }
         doc.addEventListener("pointermove", handlePointerMove, { passive: true });
         doc.addEventListener("selectstart", handleSelectStart);
         doc.addEventListener("selectionchange", handleSelectionChange);
+        doc.defaultView?.addEventListener(
+          "pagehide",
+          () => {
+            if (selectionPublishTimer) clearTimeout(selectionPublishTimer);
+            doc.removeEventListener("mouseup", handleMouseUpFallback);
+          },
+          { once: true },
+        );
       },
       [bookKey],
     );
@@ -3137,9 +3360,9 @@ function normalizeBrOnlyParagraphs(doc: Document) {
   const body = doc.body;
   if (!body || body.querySelectorAll("p").length > 2) return;
 
-  const containers: Element[] = Array.from(body.querySelectorAll("div, section, article, main")).filter(
-    shouldNormalizeBrParagraphContainer,
-  );
+  const containers: Element[] = Array.from(
+    body.querySelectorAll("div, section, article, main"),
+  ).filter(shouldNormalizeBrParagraphContainer);
   if (shouldNormalizeBrParagraphContainer(body)) containers.push(body);
 
   for (const container of containers) {

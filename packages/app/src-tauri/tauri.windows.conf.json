@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "resources": {
+      "pdf-runtime/": "pdf-runtime/",
+      "pdf-offline/": "pdf-offline/"
+    }
+  }
+}

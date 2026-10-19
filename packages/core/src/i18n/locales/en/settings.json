@@ -47,6 +47,7 @@
     "light": "Light",
     "dark": "Dark",
     "sepia": "Sepia",
+    "green": "Soft green",
     "autoSave": "Auto-save interval",
     "autoSaveDesc": "How often to save reading progress",
     "languageDesc": "Choose the display language",

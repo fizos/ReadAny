@@ -81,7 +81,14 @@ export class TauriPlatformService implements IPlatformService {
   readonly platformType = "desktop" as const;
   readonly isMobile = false;
   readonly isDesktop = true;
-  readonly capabilities = { safeWebFetch: isTauriRuntimeAvailable() } as const;
+  readonly capabilities = {
+    // Tauri injects its IPC globals independently from module evaluation. Read
+    // this capability at the point tools are assembled instead of freezing a
+    // false value if the service is constructed before injection completes.
+    get safeWebFetch() {
+      return isTauriRuntimeAvailable();
+    },
+  } as const;
 
   // ---- File system ----
 

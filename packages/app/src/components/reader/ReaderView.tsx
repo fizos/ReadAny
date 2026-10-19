@@ -30,7 +30,6 @@ import { useNotebookStore } from "@/stores/notebook-store";
 import { useReaderStore } from "@/stores/reader-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useTTSStore } from "@/stores/tts-store";
-import { useChapterTranslation } from "@readany/core/hooks";
 import { getPlatformService } from "@readany/core/services";
 import { getCSSFontFace, useFontStore, useReadingSessionStore } from "@readany/core/stores";
 import { useRubyStore } from "@readany/core/stores/ruby-store";
@@ -54,6 +53,13 @@ import { SelectionPopover } from "./SelectionPopover";
 import { TOCPanel } from "./TOCPanel";
 import { TTSPage } from "./TTSPage";
 import { TranslationPopover } from "./TranslationPopover";
+import { getReaderTranslationMode } from "./reader-capabilities";
+import { useEpubTranslation } from "./epub-translation/useEpubTranslation";
+import { EpubTranslationPane } from "./epub-translation/EpubTranslationPane";
+import { BookTranslationProfileDialog } from "./immersive-translation/BookTranslationProfileDialog";
+import { HighFidelityPdfPane } from "./immersive-translation/HighFidelityPdfPane";
+import { useBookTranslationContext } from "./immersive-translation/useBookTranslationContext";
+import { useHighFidelityPdfTranslation } from "./immersive-translation/useHighFidelityPdfTranslation";
 
 const REFLOWABLE_CHARACTERS_PER_LOCATION = 1500;
 const MAX_TRACKED_LOCATION_DELTA = 20;
@@ -569,26 +575,33 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
   const [currentSectionTotal, setCurrentSectionTotal] = useState<number | null>(null);
   const currentSectionIndexRef = useRef(0);
   const currentSectionTotalRef = useRef<number | null>(null);
+  const pdfNavigationPendingRef = useRef<symbol | null>(null);
   const currentChapterTitleRef = useRef("");
 
   // Track when foliate is ready to receive annotations
   const [foliateReady, setFoliateReady] = useState(false);
-  // Separate delayed ready for chapter translation (avoids DOM conflict with CFI navigation)
-  const [translationReady, setTranslationReady] = useState(false);
-
-  // Chapter translation hook
-  const chapterTranslation = useChapterTranslation({
+  const [bookDoc, setBookDoc] = useState<BookDoc | null>(null);
+  const [profileDialogOpen, setProfileDialogOpen] = useState(false);
+  const bookContext = useBookTranslationContext({
     bookId,
-    sectionIndex: currentSectionIndex,
-    ready: translationReady,
-    getParagraphs: () => foliateRef.current?.getChapterParagraphs() ?? [],
-    injectTranslations: (results, visibility) =>
-      foliateRef.current?.injectChapterTranslations(results, visibility),
-    removeTranslations: () => foliateRef.current?.removeChapterTranslations(),
-    applyVisibility: (originalVisible, translationVisible) =>
-      foliateRef.current?.applyChapterTranslationVisibility(originalVisible, translationVisible),
-    getCurrentCfi: () => readerTab?.currentCfi,
-    goToCfi: (cfi) => foliateRef.current?.goToCFI(cfi),
+    getMetadata: () => {
+      const labels: string[] = [];
+      const collect = (items: NonNullable<BookDoc["toc"]>) => {
+        for (const item of items) {
+          if (labels.length >= 60) return;
+          labels.push(item.label);
+          if (item.subitems) collect(item.subitems);
+        }
+      };
+      collect(bookDoc?.toc ?? []);
+      return {
+        title: book?.meta.title || "",
+        description: book?.meta.description || bookDoc?.metadata.description || "",
+        toc: labels,
+      };
+    },
+    getChapter: () => readerTab?.chapterTitle || "",
+    getSample: () => foliateRef.current?.getVisibleText().slice(0, 4000) ?? "",
   });
 
   // Track which highlights have been rendered (id -> {cfi, note, color}) to detect changes
@@ -600,7 +613,6 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
   useEffect(() => {
     renderedHighlightsRef.current.clear();
     setFoliateReady(false);
-    setTranslationReady(false);
   }, [bookId]);
 
   // Ref to track if we've already handled the initialCfi for this mount
@@ -774,9 +786,54 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
   }, [highlights, foliateReady, bookId]);
 
   // Book document state
-  const [bookDoc, setBookDoc] = useState<BookDoc | null>(null);
   const [bookFormat, setBookFormat] = useState<BookFormat>("EPUB");
   const isFixedLayout = isFixedLayoutBook(bookFormat, bookDoc);
+  const isWindowsDesktop = useMemo(() => {
+    try {
+      const platform = getPlatformService();
+      if (!platform.isDesktop || typeof navigator === "undefined") return false;
+      return /Windows/i.test(navigator.userAgent) || /^Win/i.test(navigator.platform);
+    } catch {
+      return false;
+    }
+  }, []);
+  const highFidelityPdf = useHighFidelityPdfTranslation({
+    supported: isWindowsDesktop && bookFormat === "PDF",
+    bookId,
+    filePath: book?.filePath,
+    page: currentSectionIndex,
+    prepareContext: bookContext.prepare,
+    contextEpoch: bookContext.epoch,
+    totalPages: currentSectionTotal ?? bookDoc?.sections?.length ?? null,
+  });
+  const translationMode = getReaderTranslationMode(
+    bookFormat,
+    isWindowsDesktop && bookFormat === "PDF",
+  );
+  const epubTranslation = useEpubTranslation({
+    supported: translationMode === "epub",
+    bookId,
+    sectionIndex: currentSectionIndex,
+    locationKey: readerTab?.currentCfi || `section-${currentSectionIndex}`,
+    ready: foliateReady,
+    bookTitle: book?.meta.title || "",
+    filePath: book?.filePath,
+    fixedLayout: isFixedLayout,
+    getSource: () => foliateRef.current?.getEpubTranslationSource(currentSectionIndex) ?? null,
+    getBookBlob: () => {
+      if (!book?.filePath) return Promise.reject(new Error("找不到原 EPUB 文件。"));
+      return getCachedBlob(book.filePath);
+    },
+    prepareContext: bookContext.prepare,
+    contextEpoch: bookContext.epoch,
+  });
+  const translationPaneActive = highFidelityPdf.state.enabled || epubTranslation.state.enabled;
+  const handleHighFidelityTranslationStart = useCallback(
+    (targetLang?: string) => {
+      highFidelityPdf.start(targetLang);
+    },
+    [highFidelityPdf],
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -1251,6 +1308,8 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
       const sectionTotal = detail.section?.total;
 
       currentSectionIndexRef.current = sectionIndex;
+      setCurrentSectionIndex(sectionIndex);
+      pdfNavigationPendingRef.current = null;
       if (typeof sectionTotal === "number" && Number.isFinite(sectionTotal)) {
         currentSectionTotalRef.current = sectionTotal;
         setCurrentSectionTotal((prev) => (prev === sectionTotal ? prev : sectionTotal));
@@ -1351,9 +1410,6 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
       // Throttled save to DB
       throttledSaveProgress(bookId, progress, cfi);
 
-      // Mark translation ready after first successful relocate (CFI navigation done)
-      if (!translationReady) setTranslationReady(true);
-
       // If TTS is waiting for a page turn to complete, fire the continuation callback now
       // that the renderer has fully updated its position (renderer.start reflects new page).
       if (pendingTTSContinueCallbackRef.current) {
@@ -1366,15 +1422,7 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
         void cb();
       }
     },
-    [
-      tabId,
-      bookId,
-      isFixedLayout,
-      setProgress,
-      setChapter,
-      throttledSaveProgress,
-      translationReady,
-    ],
+    [tabId, bookId, isFixedLayout, setProgress, setChapter, throttledSaveProgress],
   );
 
   const handleTocReady = useCallback((toc: TOCItem[]) => {
@@ -1403,11 +1451,12 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
   // We need to re-add all highlights for the current book.
   const handleSectionLoad = useCallback(
     (sectionIndex: number) => {
-      // Reset chapter translation on section change
-      currentSectionIndexRef.current = sectionIndex;
-      setCurrentSectionIndex(sectionIndex);
-      setTranslationReady(false);
-      chapterTranslation.reset();
+      // A fixed-layout spread loads both frames. Only relocate identifies the
+      // selected PDF page; the last frame loaded is not necessarily that page.
+      if (!isFixedLayout) {
+        currentSectionIndexRef.current = sectionIndex;
+        setCurrentSectionIndex(sectionIndex);
+      }
 
       // Delay slightly to ensure foliate view is ready
       setTimeout(() => {
@@ -1441,42 +1490,13 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
         );
       }, 100);
     },
-    [highlights, bookId, chapterTranslation.reset],
+    [highlights, bookId, isFixedLayout],
   );
 
   const handleError = useCallback((err: Error) => {
     setError(err.message);
     setIsLoading(false);
   }, []);
-
-  // Sync chapter translation visibility with DOM
-  useEffect(() => {
-    if (chapterTranslation.state.status !== "complete") return;
-    try {
-      const renderer = foliateRef.current?.getView()?.renderer;
-      const contents = renderer?.getContents?.();
-      if (!contents?.[0]?.doc) return;
-      const doc = contents[0].doc as Document;
-      const { originalVisible, translationVisible } = chapterTranslation.state;
-      // Translation elements
-      const translationEls = doc.querySelectorAll(".readany-translation");
-      translationEls.forEach((el) => {
-        (el as HTMLElement).setAttribute("data-hidden", String(!translationVisible));
-        // When original is hidden, show translation in original style
-        (el as HTMLElement).setAttribute(
-          "data-solo",
-          String(!originalVisible && translationVisible),
-        );
-      });
-      // Original text elements
-      const originalEls = doc.querySelectorAll("[data-translate-id]");
-      originalEls.forEach((el) => {
-        (el as HTMLElement).setAttribute("data-original-hidden", String(!originalVisible));
-      });
-    } catch {
-      // Ignore
-    }
-  }, [chapterTranslation.state]);
 
   const handleSelection = useCallback(
     (sel: BookSelection | null) => {
@@ -1572,10 +1592,45 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
 
   // --- Navigation (for toolbar buttons) ---
   const handleNavPrev = useCallback(() => {
-    foliateRef.current?.goPrev();
+    void foliateRef.current
+      ?.goPrev()
+      .catch(() => console.warn("Reader previous-page navigation failed"));
   }, []);
   const handleNavNext = useCallback(() => {
-    foliateRef.current?.goNext();
+    void foliateRef.current
+      ?.goNext()
+      .catch(() => console.warn("Reader next-page navigation failed"));
+  }, []);
+
+  // The translated artifact contains one page. Navigate the source reader,
+  // whose relocate event drives translation and cache lookup for the new page.
+  const handlePdfNavigate = useCallback((direction: -1 | 1) => {
+    const viewer = foliateRef.current;
+    const index = currentSectionIndexRef.current;
+    const total = currentSectionTotalRef.current;
+    if (
+      !viewer ||
+      pdfNavigationPendingRef.current ||
+      !total ||
+      (direction < 0 ? index <= 0 : index + 1 >= total)
+    )
+      return;
+    const token = Symbol("pdf-navigation");
+    pdfNavigationPendingRef.current = token;
+    const release = () => {
+      if (pdfNavigationPendingRef.current === token) pdfNavigationPendingRef.current = null;
+    };
+    const timer = window.setTimeout(release, 10000);
+    void (async () => {
+      try {
+        await viewer.goToIndex(index + direction);
+      } catch {
+        console.warn("PDF page navigation failed");
+      } finally {
+        window.clearTimeout(timer);
+        release();
+      }
+    })();
   }, []);
 
   const handleGoToChapter = useCallback(
@@ -2909,7 +2964,9 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
 
         {/* Content area — takes full remaining space */}
         <div
-          className="relative flex flex-1 overflow-hidden transition-[padding] duration-300"
+          className={`relative flex flex-1 overflow-hidden transition-[padding] duration-300 ${
+            translationPaneActive ? "flex-col lg:flex-row" : "flex-row"
+          }`}
           style={{ paddingTop: contentTopPadding }}
         >
           {readingHeaderTitle && (
@@ -2919,7 +2976,12 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
           )}
 
           {/* Reading area — FoliateViewer */}
-          <div className="relative flex-1 overflow-hidden" ref={containerRef}>
+          <div
+            className={`relative min-h-0 min-w-0 overflow-hidden ${
+              translationPaneActive ? "h-1/2 flex-none lg:h-full lg:w-1/2 lg:basis-1/2" : "flex-1"
+            }`}
+            ref={containerRef}
+          >
             {/* Click zone indicators — visible only during reader tour (driver.js highlights them) */}
             <div
               id="reader-zone-prev"
@@ -3055,6 +3117,66 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
             )}
           </div>
 
+          {epubTranslation.state.enabled && (
+            <div className="h-1/2 min-h-0 min-w-0 flex-none border-t border-border/60 lg:h-full lg:w-1/2 lg:basis-1/2 lg:border-l lg:border-t-0">
+              <EpubTranslationPane
+                state={epubTranslation.state}
+                chapterTitle={readerTab?.chapterTitle || book?.meta.title || ""}
+                providerLabel={epubTranslation.provider.profileLabel}
+                providerModel={epubTranslation.provider.model}
+                bookExport={epubTranslation.bookExport}
+                onVisible={epubTranslation.requestVisible}
+                onPrev={handleNavPrev}
+                onNext={handleNavNext}
+                onNavigate={(href) => {
+                  if (/^(https?:|mailto:)/i.test(href)) {
+                    if (getPlatformService().isDesktop)
+                      void import("@tauri-apps/plugin-opener").then(({ openUrl }) => openUrl(href));
+                    else window.open(href, "_blank", "noopener,noreferrer");
+                  } else {
+                    const section = bookDoc?.sections?.[currentSectionIndex];
+                    foliateRef.current?.goToHref(section?.resolveHref?.(href) ?? href);
+                  }
+                }}
+                onRetry={epubTranslation.retry}
+                onCancel={epubTranslation.cancel}
+                onExit={epubTranslation.exit}
+                onStartExport={epubTranslation.startExport}
+                onConfirmExport={epubTranslation.confirmExport}
+                onCancelExport={epubTranslation.cancelExport}
+              />
+            </div>
+          )}
+
+          {highFidelityPdf.state.enabled && (
+            <div className="h-1/2 min-h-0 min-w-0 flex-none border-t border-border/60 lg:h-full lg:w-1/2 lg:basis-1/2 lg:border-l lg:border-t-0">
+              <HighFidelityPdfPane
+                state={highFidelityPdf.state}
+                currentPage={currentSectionIndex + 1}
+                totalPages={currentSectionTotal ?? bookDoc?.sections?.length ?? null}
+                canGoPrev={foliateReady && currentSectionIndex > 0}
+                canGoNext={
+                  foliateReady &&
+                  currentSectionIndex + 1 < (currentSectionTotal ?? bookDoc?.sections?.length ?? 0)
+                }
+                onPrev={() => handlePdfNavigate(-1)}
+                onNext={() => handlePdfNavigate(1)}
+                providerLabel={highFidelityPdf.provider.profileLabel}
+                providerModel={highFidelityPdf.provider.model}
+                usesActiveAiEndpoint={highFidelityPdf.provider.usesActiveAiEndpoint}
+                onInstall={highFidelityPdf.install}
+                onCancel={highFidelityPdf.cancel}
+                onRetry={highFidelityPdf.retry}
+                onExit={highFidelityPdf.exit}
+                prefetch={highFidelityPdf.prefetch}
+                bookExport={highFidelityPdf.bookExport}
+                onStartExport={highFidelityPdf.startExport}
+                onConfirmExport={highFidelityPdf.confirmExport}
+                onCancelExport={highFidelityPdf.cancelExport}
+              />
+            </div>
+          )}
+
           {/* Floating Toolbar — overlays content area */}
           <ReaderToolbar
             tabId={tabId}
@@ -3068,12 +3190,23 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
             onToggleSettings={handleToggleSettings}
             onToggleChat={handleToggleChat}
             onToggleTTS={handleToggleTTS}
-            chapterTranslationState={chapterTranslation.state}
-            onChapterTranslationStart={chapterTranslation.startTranslation}
-            onChapterTranslationCancel={chapterTranslation.cancelTranslation}
-            onToggleOriginalVisible={chapterTranslation.toggleOriginalVisible}
-            onToggleTranslationVisible={chapterTranslation.toggleTranslationVisible}
-            onChapterTranslationReset={chapterTranslation.reset}
+            onBookTranslationProfile={() => setProfileDialogOpen(true)}
+            bookContextStatus={
+              bookContext.event?.status === "generating" ? "正在分析本书主题和术语…" : undefined
+            }
+            highFidelityPdfState={highFidelityPdf.state}
+            epubTranslationState={epubTranslation.state}
+            onEpubTranslationStart={epubTranslation.start}
+            onEpubTranslationCancel={epubTranslation.cancel}
+            onEpubTranslationRetry={epubTranslation.retry}
+            onEpubTranslationExit={epubTranslation.exit}
+            onHighFidelityPdfStart={handleHighFidelityTranslationStart}
+            onHighFidelityPdfInstall={highFidelityPdf.install}
+            onHighFidelityPdfCancel={highFidelityPdf.cancel}
+            onHighFidelityPdfRetry={highFidelityPdf.retry}
+            onHighFidelityPdfExit={highFidelityPdf.exit}
+            isHighFidelityPdfSupported={isWindowsDesktop && bookFormat === "PDF"}
+            isEpubTranslationSupported={translationMode === "epub"}
             isChatOpen={showChat}
             isTTSActive={showTTS || ttsPlayState !== "stopped"}
             isFixedLayout={isFixedLayout}
@@ -3090,6 +3223,19 @@ export function ReaderView({ bookId, tabId }: ReaderViewProps) {
           />
 
           {/* Floating Footer bar — overlays content area */}
+          <BookTranslationProfileDialog
+            key={`${bookId}:${bookContext.targetLang}`}
+            open={profileDialogOpen}
+            onOpenChange={setProfileDialogOpen}
+            title={book?.meta.title || ""}
+            targetLang={bookContext.targetLang}
+            profile={bookContext.event?.profile}
+            status={bookContext.event?.status}
+            error={bookContext.event?.error}
+            onSave={bookContext.save}
+            onRegenerate={bookContext.regenerate}
+            onCancelGeneration={bookContext.cancelGeneration}
+          />
           <FooterBar
             tabId={tabId}
             totalPages={totalPages}

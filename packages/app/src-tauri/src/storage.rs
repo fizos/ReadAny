@@ -11,7 +11,10 @@ struct DataRootConfig {
 }
 
 fn normalize_dir(path: &str) -> Option<PathBuf> {
-    let trimmed = path.trim().trim_start_matches("file://").trim_end_matches(['/', '\\']);
+    let trimmed = path
+        .trim()
+        .trim_start_matches("file://")
+        .trim_end_matches(['/', '\\']);
     if trimmed.is_empty() {
         return None;
     }
