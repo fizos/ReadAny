@@ -2393,6 +2393,7 @@ mod tests {
     fn export_destination_rejects_source_and_requires_explicit_overwrite() {
         let root = std::env::temp_dir().join(format!("readany-pdf-export-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).expect("temp dir");
+        #[cfg(target_os = "macos")]
         let root = fs::canonicalize(root).expect("canonical temp dir");
         let source = root.join("source.pdf");
         fs::write(&source, b"%PDF-1.7\nsource").expect("source");
