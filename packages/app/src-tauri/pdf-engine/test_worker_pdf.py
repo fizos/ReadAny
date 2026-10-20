@@ -87,7 +87,7 @@ class PdfBoundaryTests(unittest.TestCase):
                     request = dict(action='translate', jobId=case, jobDir=str(root / case),
                                    filePath=str(source), page=2 if case == 'range' else 1,
                                    cacheDir=str(root / 'pages'))
-                    result = subprocess.run([sys.executable, '-I', str(Path(worker.__file__).resolve())],
+                    result = subprocess.run([sys.executable, '-I', '-B', str(Path(worker.__file__).resolve())],
                                             input=json.dumps(request).encode(), capture_output=True, timeout=20)
                     events = [json.loads(line) for line in result.stdout.decode('utf-8').splitlines()]
                     self.assertEqual(result.returncode, 1)

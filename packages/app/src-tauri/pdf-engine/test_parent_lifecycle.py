@@ -19,7 +19,7 @@ class ParentLifecycleTests(unittest.TestCase):
             's=importlib.util.spec_from_file_location("worker",sys.argv[1])\n'
             'w=importlib.util.module_from_spec(s);s.loader.exec_module(w)\n'
             'w.watch_native_parent()\n'
-            'p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(60)"])\n'
+            'p=subprocess.Popen([sys.executable,"-I","-B","-c","import time;time.sleep(60)"])\n'
             'print(p.pid,flush=True)\n'
             # Do not let inherited stdin EOF end the worker before its watchdog
             # can observe the parent's death. Real setup/translation blocks in

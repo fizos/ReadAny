@@ -101,6 +101,16 @@ jobs:
           pnpm --filter @readany/cli build
           cargo test --manifest-path packages/app/src-tauri/Cargo.toml pdf_engine::tests
 
+      - name: Verify tests did not mutate the signed runtime
+        run: |
+          python3 -B - <<'PY'
+          from pathlib import Path
+          import runpy
+          verifier = runpy.run_path("scripts/verify-pdf-macos.py")
+          verifier["verify_hashes"](Path("packages/app/src-tauri"))
+          print("PASS: signed staged runtime unchanged after native tests")
+          PY
+
       - name: Build Apple Silicon app and DMG
         env:
           APPLE_SIGNING_IDENTITY: "-"
