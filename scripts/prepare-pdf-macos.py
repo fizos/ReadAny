@@ -112,14 +112,19 @@ def locate_python(install_dir: Path) -> Path:
     return candidates[0]
 
 
-def copy_tree_preserving_relative_links(source: Path, destination: Path) -> None:
+def copy_runtime_tree(source: Path, destination: Path) -> None:
     source = source.resolve()
     for link in source.rglob("*"):
         if not link.is_symlink():
             continue
-        target = link.resolve()
+        try:
+            target = link.resolve(strict=True)
+        except (OSError, RuntimeError):
+            fail(f"managed Python contains a dangling/cyclic symlink: {link}")
         if not target.is_relative_to(source):
-            fail(f"managed Python contains an absolute/out-of-tree symlink: {link}")
+            fail(f"managed Python contains an out-of-tree symlink: {link}")
+        if target.is_dir():
+            fail(f"managed Python contains an unsupported directory symlink: {link}")
     def ignore_build_tools(folder, names):
         folder = Path(folder)
         if folder.name == "site-packages":
@@ -131,18 +136,10 @@ def copy_tree_preserving_relative_links(source: Path, destination: Path) -> None
             return [name for name in names if name == "pip" or
                     name.startswith(("pip3", "2to3", "idle3", "pydoc3"))]
         return []
-    shutil.copytree(source, destination, symlinks=True, copy_function=shutil.copy2,
+    # Tauri dereferences runtime aliases. Materialize validated file links
+    # before signing/hashing so staging and final bundle have the same files.
+    shutil.copytree(source, destination, symlinks=False, copy_function=shutil.copy2,
                     ignore=ignore_build_tools)
-    # A managed installation may contain an absolute link to its own root.
-    # Rewrite that link before deleting the build-time managed directory.
-    for link in source.rglob("*"):
-        if link.is_symlink() and os.path.isabs(os.readlink(link)):
-            copied = destination / link.relative_to(source)
-            if not copied.is_symlink():
-                continue
-            target = destination / link.resolve().relative_to(source)
-            copied.unlink()
-            copied.symlink_to(os.path.relpath(target, copied.parent))
 
 
 def is_macho(path: Path) -> bool:
@@ -370,7 +367,7 @@ def stage_runtime(uv: Path, managed_python: Path, runtime: Path) -> None:
     if runtime.exists():
         shutil.rmtree(runtime)
     runtime.parent.mkdir(parents=True, exist_ok=True)
-    copy_tree_preserving_relative_links(managed_python.parent.parent if managed_python.parent.name == "bin" else managed_python, runtime)
+    copy_runtime_tree(managed_python.parent.parent if managed_python.parent.name == "bin" else managed_python, runtime)
     # Keep a single relocatable copy of uv beside the managed interpreter.
     uv_target = runtime / "uv"
     shutil.copy2(uv, uv_target)

@@ -42,7 +42,7 @@ class BuildTests(unittest.TestCase):
                 builder.safe_extract_tar(archive, root/'unpacked')
             self.assertFalse((root/'escape').exists())
 
-    def test_absolute_internal_symlink_is_relocated(self):
+    def test_internal_file_alias_is_materialized_before_signing(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             source = root/'source'
@@ -53,9 +53,32 @@ class BuildTests(unittest.TestCase):
             except OSError:
                 self.skipTest('host does not allow symlink creation')
             destination = root/'relocated'
-            builder.copy_tree_preserving_relative_links(source, destination)
-            self.assertFalse(os.path.isabs(os.readlink(destination/'python3')))
-            self.assertEqual((destination/'python3').resolve(), (destination/'python3.12').resolve())
+            builder.copy_runtime_tree(source, destination)
+            self.assertFalse((destination/'python3').is_symlink())
+            self.assertEqual((destination/'python3').read_bytes(), b'python')
+            self.assertEqual((destination/'python3.12').read_bytes(), b'python')
+            self.assertTrue((source/'python3').is_symlink())
+            self.assertTrue(os.path.isabs(os.readlink(source/'python3')))
+
+    def test_unsafe_runtime_links_fail_before_copy(self):
+        for kind in ('external', 'ancestor-directory', 'dangling'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                source = root/'source'
+                source.mkdir()
+                outside = root/'outside'
+                outside.write_bytes(b'outside')
+                target = {'external': outside, 'ancestor-directory': source,
+                          'dangling': source/'missing'}[kind]
+                try:
+                    (source/'alias').symlink_to(target, target_is_directory=target.is_dir())
+                except OSError:
+                    self.skipTest('host does not allow symlink creation')
+                destination = root/'runtime'
+                with self.assertRaises(SystemExit):
+                    builder.copy_runtime_tree(source, destination)
+                self.assertFalse(destination.exists())
+                self.assertEqual(outside.read_bytes(), b'outside')
 
     def test_signed_runtime_manifest_detects_mutations(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -92,7 +115,7 @@ class BuildTests(unittest.TestCase):
             (source/'lib/python3.12/venv').mkdir()
             (source/'lib/python3.12/venv/__init__.py').write_bytes(b'stdlib')
             destination = root/'runtime'
-            builder.copy_tree_preserving_relative_links(source, destination)
+            builder.copy_runtime_tree(source, destination)
             self.assertEqual((destination/'bin/python3').read_bytes(), b'interpreter')
             for name in tools:
                 self.assertFalse((destination/'bin'/name).exists(), name)
