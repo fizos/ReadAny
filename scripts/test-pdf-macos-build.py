@@ -84,12 +84,19 @@ class BuildTests(unittest.TestCase):
             packages.mkdir(parents=True)
             (packages/'windows-launcher.exe').write_bytes(b'build-tool')
             (source/'bin').mkdir()
-            (source/'bin/pip3').write_bytes(b'build-tool')
+            tools = ['pip', 'pip3', 'pip3.12', '2to3', '2to3-3.12',
+                     'idle3', 'idle3.12', 'pydoc3', 'pydoc3.12']
+            for name in tools:
+                (source/'bin'/name).write_bytes(b'build-tool')
             (source/'bin/python3').write_bytes(b'interpreter')
+            (source/'lib/python3.12/venv').mkdir()
+            (source/'lib/python3.12/venv/__init__.py').write_bytes(b'stdlib')
             destination = root/'runtime'
             builder.copy_tree_preserving_relative_links(source, destination)
             self.assertEqual((destination/'bin/python3').read_bytes(), b'interpreter')
-            self.assertFalse((destination/'bin/pip3').exists())
+            for name in tools:
+                self.assertFalse((destination/'bin'/name).exists(), name)
+            self.assertEqual((destination/'lib/python3.12/venv/__init__.py').read_bytes(), b'stdlib')
             self.assertEqual(list((destination/'lib/python3.12/site-packages').iterdir()), [])
 
 

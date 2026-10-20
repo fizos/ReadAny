@@ -125,7 +125,11 @@ def copy_tree_preserving_relative_links(source: Path, destination: Path) -> None
         if folder.name == "site-packages":
             return names  # Runtime dependencies live only in the private venv.
         if folder == source / "bin":
-            return [name for name in names if name == "pip" or name.startswith("pip3")]
+            # These optional CLI tools are unused by the worker. Exclude both
+            # aliases and versioned targets so Tauri cannot dereference their
+            # script symlinks into unexpected, unmanifested bundle files.
+            return [name for name in names if name == "pip" or
+                    name.startswith(("pip3", "2to3", "idle3", "pydoc3"))]
         return []
     shutil.copytree(source, destination, symlinks=True, copy_function=shutil.copy2,
                     ignore=ignore_build_tools)
